@@ -6,7 +6,6 @@ import {
   RxCross2,
   RxChevronLeft,
   RxChevronRight,
-  RxMagnifyingGlass,
   RxBookmark,
   RxBookmarkFilled,
   RxPencil1,
@@ -107,19 +106,6 @@ function splitTextIntoPages(text: string, charsPerPage: number): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: format seconds into "Xh Ym Zs" or "Xm Ys" or "Ys"
-// ---------------------------------------------------------------------------
-
-function formatReadingTime(totalSeconds: number, translate: (key: string, params?: Record<string, string | number>) => string): string {
-  const hours = Math.floor(totalSeconds / 3600)
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-  const seconds = totalSeconds % 60
-  if (hours > 0) return `${hours}${translate('reader.timeHour')}${minutes}${translate('reader.timeMinute')}${seconds}${translate('reader.timeSecond')}`
-  if (minutes > 0) return `${minutes}${translate('reader.timeMinute')}${seconds}${translate('reader.timeSecond')}`
-  return `${seconds}${translate('reader.timeSecond')}`
-}
-
-// ---------------------------------------------------------------------------
 // Inline CSS for rendered Markdown content (scoped via .novel-md-content)
 // ---------------------------------------------------------------------------
 
@@ -174,7 +160,7 @@ function ReaderView() {
   // ---- Book identity ----
   const [bookId, setBookId] = useState<number | null>(null)
   const [bookTitle, setBookTitle] = useState('')
-  const [bookPath, setBookPath] = useState('')
+  const [_bookPath, setBookPath] = useState('')
   const [sourceType, setSourceType] = useState<'pdf' | 'txt' | 'md'>('txt')
 
   // ---- Loading & error ----
@@ -236,22 +222,6 @@ function ReaderView() {
     color: HIGHLIGHT_COLORS[0],
   })
   const noteTextareaRef = useRef<HTMLTextAreaElement>(null)
-
-  // ---- Search ----
-  const [showSearch, setShowSearch] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
-  const [searchResults, setSearchResults] = useState<databaseService.SearchResult[]>([])
-  const [currentMatchIndex, setCurrentMatchIndex] = useState(-1)
-  const [isSearching, setIsSearching] = useState(false)
-  const searchInputRef = useRef<HTMLInputElement>(null)
-
-  // ---- Reading statistics ----
-  const [sessionId, setSessionId] = useState<number | null>(null)
-  const [elapsedSeconds, setElapsedSeconds] = useState(0)
-  const [pagesReadToday, setPagesReadToday] = useState(0)
-  const [totalReadingStats, setTotalReadingStats] = useState<databaseService.ReadingStats | null>(null)
-  const sessionStartPageRef = useRef(1)
-  const statsTimerRef = useRef<number | null>(null)
 
   // ---- Refs ----
   const contentRef = useRef<HTMLDivElement>(null)
@@ -437,26 +407,15 @@ function ReaderView() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't intercept when typing in search or note inputs
       const target = e.target as HTMLElement
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
         if (e.key === 'Escape') {
-          setShowSearch(false)
           setNoteInput({ visible: false, color: HIGHLIGHT_COLORS[0] })
-        }
-        if (showSearch && e.key === 'Enter') {
-          e.preventDefault()
-          if (e.shiftKey) navigateSearchPrev()
-          else navigateSearchNext()
         }
         return
       }
 
       if (e.key === 'Escape') {
-        if (showSearch) {
-          setShowSearch(false)
-          return
-        }
         if (selectionToolbar) {
           setSelectionToolbar(null)
           setShowColorPicker(false)
@@ -475,15 +434,11 @@ function ReaderView() {
       } else if (e.key === 'End') {
         e.preventDefault()
         goToPage(effectiveTotalPages)
-      } else if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-        e.preventDefault()
-        setShowSearch(true)
-        setTimeout(() => searchInputRef.current?.focus(), 50)
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [goPrev, goNext, goToPage, effectiveTotalPages, showSearch, selectionToolbar])
+  }, [goPrev, goNext, goToPage, effectiveTotalPages, selectionToolbar])
 
   // =========================================================================
   // Wheel navigation (paginated mode only)
@@ -666,14 +621,6 @@ function ReaderView() {
     const currentWindow = getCurrentWindow()
     const unlisten = currentWindow.onCloseRequested(async (_event) => {
       await handleBeforeUnload()
-      if (sessionId) {
-        const pagesRead = Math.abs(currentPage - sessionStartPageRef.current)
-        try {
-          await databaseService.endReadingSession(sessionId, pagesRead)
-        } catch (err) {
-          console.error('End session on close error:', err)
-        }
-      }
     })
 
     window.addEventListener('beforeunload', handleBeforeUnload)
@@ -681,7 +628,7 @@ function ReaderView() {
       window.removeEventListener('beforeunload', handleBeforeUnload)
       unlisten.then(fn => fn()).catch(() => {})
     }
-  }, [bookId, currentPage, effectiveTotalPages, currentChapter, sessionId])
+  }, [bookId, currentPage, effectiveTotalPages, currentChapter])
 
   // =========================================================================
   // Chapter navigation
@@ -729,8 +676,6 @@ function ReaderView() {
         }
       }
     }
-
-    setShowChapterPanel(false)
   }, [sourceType, txtChapters, txtPages, mdChapters, readMode, goToPage])
 
   // =========================================================================
@@ -983,109 +928,6 @@ function ReaderView() {
   }, [bookId, selectionToolbar, currentChapter, noteInput.color, loadHighlights, showNotification])
 
   // =========================================================================
-  // Full-text search
-  // =========================================================================
-
-  const performSearch = useCallback(async (query: string) => {
-    if (!query.trim() || !bookPath) {
-      setSearchResults([])
-      setCurrentMatchIndex(-1)
-      return
-    }
-
-    setIsSearching(true)
-    try {
-      let results: databaseService.SearchResults
-      if (sourceType === 'pdf') {
-        results = await databaseService.searchInPdf(bookPath, query)
-      } else if (sourceType === 'txt') {
-        results = await databaseService.searchInTxt(bookPath, query)
-      } else {
-        results = await databaseService.searchInMd(bookPath, query)
-      }
-      setSearchResults(results.results)
-      setCurrentMatchIndex(results.results.length > 0 ? 0 : -1)
-    } catch (err) {
-      console.error('Search error:', err)
-      setSearchResults([])
-      setCurrentMatchIndex(-1)
-    } finally {
-      setIsSearching(false)
-    }
-  }, [bookPath, sourceType])
-
-  const navigateSearchNext = useCallback(() => {
-    if (searchResults.length === 0) return
-    setCurrentMatchIndex(prev => (prev + 1) % searchResults.length)
-  }, [searchResults.length])
-
-  const navigateSearchPrev = useCallback(() => {
-    if (searchResults.length === 0) return
-    setCurrentMatchIndex(prev => (prev - 1 + searchResults.length) % searchResults.length)
-  }, [searchResults.length])
-
-  // Jump to current search match
-  useEffect(() => {
-    if (currentMatchIndex < 0 || searchResults.length === 0) return
-    const match = searchResults[currentMatchIndex]
-    if (!match) return
-    goToPage(match.page_number)
-  }, [currentMatchIndex, searchResults, goToPage])
-
-  // Debounced search on query change
-  useEffect(() => {
-    if (!searchQuery.trim()) {
-      setSearchResults([])
-      setCurrentMatchIndex(-1)
-      return
-    }
-    const timer = window.setTimeout(() => {
-      performSearch(searchQuery)
-    }, 300)
-    return () => clearTimeout(timer)
-  }, [searchQuery, performSearch])
-
-  // =========================================================================
-  // Reading statistics
-  // =========================================================================
-
-  // Start reading session when book opens
-  useEffect(() => {
-    if (!bookId || isLoading) return
-
-    const startSession = async () => {
-      try {
-        const id = await databaseService.startReadingSession(bookId)
-        setSessionId(id)
-        sessionStartPageRef.current = currentPage
-
-        // Load total stats
-        const stats = await databaseService.getReadingStats(bookId)
-        setTotalReadingStats(stats)
-      } catch (err) {
-        console.error('Start reading session error:', err)
-      }
-    }
-    startSession()
-  }, [bookId, isLoading]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Elapsed time timer
-  useEffect(() => {
-    statsTimerRef.current = window.setInterval(() => {
-      setElapsedSeconds(prev => prev + 1)
-    }, 1000)
-
-    return () => {
-      if (statsTimerRef.current) clearInterval(statsTimerRef.current)
-    }
-  }, [])
-
-  // Track pages read today
-  useEffect(() => {
-    setPagesReadToday(prev => prev + 1)
-  }, [currentPage])
-
-  // =========================================================================
   // Sidebar resize handler
   // =========================================================================
 
@@ -1128,7 +970,6 @@ function ReaderView() {
     return () => {
       if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current)
       if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
-      if (statsTimerRef.current) clearInterval(statsTimerRef.current)
     }
   }, [])
 
@@ -1237,79 +1078,9 @@ function ReaderView() {
     return parts
   }, [highlights, sourceType, txtPages, themeColors.text])
 
-  // =========================================================================
-  // Apply search highlights to text
-  // =========================================================================
-
-  const applySearchHighlights = useCallback((text: string): React.ReactNode[] => {
-    if (!searchQuery || searchResults.length === 0) return [text]
-
-    const caseInsensitiveText = text.toLowerCase()
-    const query = searchQuery.toLowerCase()
-    const parts: React.ReactNode[] = []
-    let lastEnd = 0
-    let matchCount = 0
-
-    // Find all occurrences in this text
-    let searchIndex = 0
-    while (searchIndex < caseInsensitiveText.length) {
-      const foundAt = caseInsensitiveText.indexOf(query, searchIndex)
-      if (foundAt === -1) break
-
-      if (foundAt > lastEnd) {
-        parts.push(text.substring(lastEnd, foundAt))
-      }
-
-      // Check if this is the current match
-      const isCurrentMatch = searchResults[currentMatchIndex]
-        && searchResults[currentMatchIndex].page_number === currentPage
-        && matchCount === 0 // Simplified: highlight first match on page
-
-      parts.push(
-        <mark
-          key={`search-${foundAt}`}
-          style={{
-            backgroundColor: isCurrentMatch ? '#CBE93A' : '#CBE93A44',
-            color: isCurrentMatch ? '#1A1A1A' : themeColors.text,
-            borderRadius: '2px',
-            padding: '0 1px',
-          }}
-        >
-          {text.substring(foundAt, foundAt + query.length)}
-        </mark>
-      )
-
-      lastEnd = foundAt + query.length
-      searchIndex = foundAt + 1
-      matchCount++
-    }
-
-    if (lastEnd < text.length) {
-      parts.push(text.substring(lastEnd))
-    }
-
-    return parts.length > 0 ? parts : [text]
-  }, [searchQuery, searchResults, currentMatchIndex, currentPage, themeColors.text])
-
-  // =========================================================================
-  // Combined text rendering with highlights and search
-  // =========================================================================
-
   const renderAnnotatedText = useCallback((text: string, pageNumber: number): React.ReactNode[] => {
-    // First apply highlights, then apply search highlights on top
-    const highlightedParts = applyHighlightsToText(text, pageNumber)
-
-    if (!searchQuery) return highlightedParts
-
-    // Apply search highlighting to each part
-    return highlightedParts.flatMap((part) => {
-      if (typeof part === 'string') {
-        return applySearchHighlights(part)
-      }
-      // Already a highlighted mark, keep as-is
-      return [part]
-    })
-  }, [applyHighlightsToText, applySearchHighlights, searchQuery])
+    return applyHighlightsToText(text, pageNumber)
+  }, [applyHighlightsToText])
 
   // =========================================================================
   // Render: content area
@@ -1376,9 +1147,9 @@ function ReaderView() {
                       — {t('reader.pageDash', {0: page.page_number})} —
                     </div>
                     <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                      {highlights.length > 0 || searchQuery
-                        ? renderAnnotatedText(page.text || t('reader.noTextOnPage'), page.page_number)
-                        : (page.text || t('reader.noTextOnPage'))}
+                      {highlights.length > 0
+                      ? renderAnnotatedText(page.text || t('reader.noTextOnPage'), page.page_number)
+                      : (page.text || t('reader.noTextOnPage'))}
                     </div>
                   </div>
                 ))
@@ -1401,7 +1172,7 @@ function ReaderView() {
                         </div>
                       )}
                       <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                        {highlights.length > 0 || searchQuery ? renderAnnotatedText(text, chNum) : text}
+                        {highlights.length > 0 ? renderAnnotatedText(text, chNum) : text}
                       </div>
                     </div>
                   )
@@ -1410,7 +1181,7 @@ function ReaderView() {
 
               {sourceType === 'txt' && (chapters.length === 0 ? (
                 <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                  {highlights.length > 0 || searchQuery
+                  {highlights.length > 0
                     ? renderAnnotatedText(txtText, currentPage)
                     : txtText}
                 </div>
@@ -1433,7 +1204,7 @@ function ReaderView() {
                         </div>
                       )}
                       <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                        {highlights.length > 0 || searchQuery ? renderAnnotatedText(text, chNum) : text}
+                        {highlights.length > 0 ? renderAnnotatedText(text, chNum) : text}
                       </div>
                     </div>
                   )
@@ -1669,23 +1440,6 @@ function ReaderView() {
 
         {/* Right: controls */}
         <div className="flex items-center gap-2 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
-          {/* Search button */}
-          <button
-            onClick={(e) => {
-              e.stopPropagation()
-              setShowSearch(!showSearch)
-              if (!showSearch) setTimeout(() => searchInputRef.current?.focus(), 50)
-            }}
-            className={`px-2 py-1 rounded text-sm transition-colors ${
-              showSearch
-                ? 'bg-accent text-accent-text'
-                : 'bg-bg-hover hover:bg-toolbar-hover text-text-primary'
-            }`}
-            title={t('reader.searchShortcut')}
-          >
-            <RxMagnifyingGlass className="w-4 h-4" />
-          </button>
-
           {/* Bookmark panel toggle */}
           <button
             onClick={(e) => {
@@ -1824,66 +1578,6 @@ function ReaderView() {
 
         </div>
       </div>
-
-      {/* ---- Search bar ---- */}
-      {showSearch && (
-        <div
-          className="flex items-center gap-2 px-3 flex-shrink-0"
-          style={{
-            height: '36px',
-            backgroundColor: '#212121',
-            borderBottom: '1px solid #363636',
-          }}
-        >
-          <RxMagnifyingGlass className="w-4 h-4 flex-shrink-0" style={{ color: '#909090' }} />
-          <input
-            ref={searchInputRef}
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder={t('reader.searchPlaceholder')}
-            className="flex-1 bg-transparent text-sm outline-none"
-            style={{ color: '#E0E0E0' }}
-            aria-label={t('reader.search')}
-          />
-          {isSearching && (
-            <span style={{ fontSize: '11px', color: '#909090' }}>{t('reader.searching')}</span>
-          )}
-          {searchResults.length > 0 && (
-            <span style={{ fontSize: '12px', color: '#E0E0E0' }}>
-              {currentMatchIndex + 1}/{searchResults.length}
-            </span>
-          )}
-          <button
-            onClick={navigateSearchPrev}
-            disabled={searchResults.length === 0}
-            className="text-text-secondary hover:text-text-primary disabled:text-text-muted"
-            title={t('reader.prevMatch')}
-          >
-            <RxChevronLeft className="w-4 h-4" />
-          </button>
-          <button
-            onClick={navigateSearchNext}
-            disabled={searchResults.length === 0}
-            className="text-text-secondary hover:text-text-primary disabled:text-text-muted"
-            title={t('reader.nextMatch')}
-          >
-            <RxChevronRight className="w-4 h-4" />
-          </button>
-          <button
-            onClick={() => {
-              setShowSearch(false)
-              setSearchQuery('')
-              setSearchResults([])
-              setCurrentMatchIndex(-1)
-            }}
-            className="text-text-muted hover:text-text-primary"
-            title={t('reader.closeSearch')}
-          >
-            <RxCross2 className="w-4 h-4" />
-          </button>
-        </div>
-      )}
 
       {/* ---- Selection floating toolbar ---- */}
       {selectionToolbar && selectionToolbar.visible && (
@@ -2240,20 +1934,6 @@ function ReaderView() {
           </span>
         </div>
         <div className="flex items-center gap-3">
-          {/* Reading time */}
-          <span
-            style={{ fontSize: '11px', color: '#909090' }}
-            title={totalReadingStats
-              ? t('reader.totalReadingTime', {0: formatReadingTime(totalReadingStats.total_duration_seconds, t), 1: totalReadingStats.total_sessions})
-              : t('reader.currentReadingTime')
-            }
-          >
-            {formatReadingTime(elapsedSeconds, t)}
-          </span>
-          {/* Pages read today */}
-          <span style={{ fontSize: '11px', color: '#555555' }}>
-            +{pagesReadToday}{t('reader.pagesReadToday')}
-          </span>
           {/* Page indicator */}
           {readMode === 'scroll' ? (
             <span style={{ fontSize: '14px', color: '#D0D0D0' }}>{scrollPercentage}%</span>
