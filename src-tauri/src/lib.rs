@@ -1,15 +1,14 @@
-// Manga Reader Library
-// This file will contain the core functionality for manga reading
-
-pub mod archive_cache;
-mod sort_utils;
-pub mod archive_parser;
+pub mod sort_utils;
 pub mod database;
+pub mod events;
 pub mod file_operations;
 pub mod folder_manager;
 pub mod library_scanner;
 pub mod settings;
+pub mod pdf_text_extractor;
+pub mod txt_parser;
+pub mod md_parser;
 
 pub fn setup() {
-    println!("Manga Reader initialized");
+    println!("Novel Reader initialized");
 }

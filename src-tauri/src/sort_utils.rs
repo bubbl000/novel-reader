@@ -2,8 +2,8 @@ use std::cmp::Ordering;
 use std::sync::LazyLock;
 use regex::Regex;
 
-// 参考: e:\06-xiangmu\处理中\new2\manga-reader\src-tauri\src\archive_parser.rs (原 L20-L65)
-// 参考: e:\06-xiangmu\处理中\new2\manga-reader\src-tauri\src\library_scanner.rs (原 L170-L215)
+// 参考: e:\06-xiangmu\处理中\new2\novel-reader\src-tauri\src\archive_parser.rs (原 L20-L65)
+// 参考: e:\06-xiangmu\处理中\new2\novel-reader\src-tauri\src\library_scanner.rs (原 L170-L215)
 
 /// 缓存的正则表达式，避免每次比较时重新编译
 static NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+)").unwrap());

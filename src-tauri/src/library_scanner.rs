@@ -1,19 +1,15 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{HashSet, HashMap};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use crate::sort_utils::natural_cmp;
 use rayon::prelude::*;
 
-const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "bmp", "gif"];
-const COMIC_EXTENSIONS: &[&str] = &["cbz", "zip", "cbr", "rar"];
-const PDF_EXTENSION: &str = "pdf";
+const NOVEL_EXTENSIONS: &[&str] = &["pdf", "txt", "md", "markdown"];
 
-/// Maximum recursion depth to prevent stack overflow from symlink cycles
 const MAX_SCAN_DEPTH: usize = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ComicCandidate {
+pub struct BookCandidate {
     pub path: String,
     pub title: String,
     pub source_type: String,
@@ -21,142 +17,101 @@ pub struct ComicCandidate {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
-    pub comics: Vec<ComicCandidate>,
+    pub books: Vec<BookCandidate>,
     pub error: Option<String>,
 }
 
-pub fn scan_comic_directory(directory: &str) -> ScanResult {
+pub fn scan_book_directory(directory: &str) -> ScanResult {
     let path = PathBuf::from(directory);
-    
+
     if !path.exists() || !path.is_dir() {
         return ScanResult {
-            comics: Vec::new(),
+            books: Vec::new(),
             error: Some(format!("目录不存在或无效: {}", directory)),
         };
     }
 
-    let mut comics = Vec::new();
+    let mut books = Vec::new();
     let _visited: HashSet<String> = HashSet::new();
-    let _folder_cache: HashMap<PathBuf, bool> = HashMap::new();
-    let _added_image_folders: HashSet<PathBuf> = HashSet::new();
-    
-    // 第一层目录使用 rayon 并行扫描
+
     if let Ok(entries) = fs::read_dir(&path) {
         let entry_paths: Vec<_> = entries
             .filter_map(|e| e.ok().map(|entry| entry.path()))
             .collect();
-        
+
         let results: Vec<_> = entry_paths
             .par_iter()
             .filter_map(|entry_path| {
-                let mut sub_comics = Vec::new();
+                let mut sub_books = Vec::new();
                 let mut sub_visited = HashSet::new();
-                let mut sub_folder_cache = HashMap::new();
-                let mut sub_added = HashSet::new();
-                
+
                 if entry_path.is_dir() {
                     let _ = scan_directory_recursive(
-                        entry_path, &mut sub_comics, &mut sub_visited,
-                        &mut sub_folder_cache, &mut sub_added, 1
+                        entry_path, &mut sub_books, &mut sub_visited, 1
                     );
                 } else if entry_path.is_file() {
-                    process_file_entry(entry_path, &mut sub_comics, &mut sub_added, &mut sub_folder_cache);
+                    process_file_entry(entry_path, &mut sub_books);
                 }
-                
-                Some(sub_comics)
+
+                Some(sub_books)
             })
             .collect();
-        
-        for sub_comics in results {
-            comics.extend(sub_comics);
+
+        for sub_books in results {
+            books.extend(sub_books);
         }
     }
 
     ScanResult {
-        comics,
+        books,
         error: None,
     }
 }
 
 fn process_file_entry(
     path: &Path,
-    comics: &mut Vec<ComicCandidate>,
-    added_image_folders: &mut HashSet<PathBuf>,
-    folder_cache: &mut HashMap<PathBuf, bool>,
+    books: &mut Vec<BookCandidate>,
 ) {
     if let Some(ext) = path.extension() {
         let ext_lower = ext.to_string_lossy().to_lowercase();
-        
-        if COMIC_EXTENSIONS.contains(&ext_lower.as_str()) {
+
+        if NOVEL_EXTENSIONS.contains(&ext_lower.as_str()) {
             let title = path
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
-            
-            comics.push(ComicCandidate {
-                path: path.to_string_lossy().to_string(),
-                title,
-                source_type: "archive".to_string(),
-            });
-        } else if ext_lower == PDF_EXTENSION {
-            let title = path
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            
-            comics.push(ComicCandidate {
-                path: path.to_string_lossy().to_string(),
-                title,
-                source_type: "pdf".to_string(),
-            });
-        } else if IMAGE_EXTENSIONS.contains(&ext_lower.as_str()) {
-            let parent = path.parent().unwrap_or(Path::new("")).to_path_buf();
-            let has_comic_archive = if let Some(&cached) = folder_cache.get(&parent) {
-                cached
-            } else {
-                let result = folder_has_comic_archives(&parent);
-                folder_cache.insert(parent.clone(), result);
-                result
+
+            let source_type = match ext_lower.as_str() {
+                "pdf" => "pdf",
+                "txt" => "txt",
+                "md" | "markdown" => "md",
+                _ => "unknown",
             };
-            
-            if !has_comic_archive && !added_image_folders.contains(&parent) {
-                added_image_folders.insert(parent.clone());
-                
-                let title = parent
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                
-                comics.push(ComicCandidate {
-                    path: parent.to_string_lossy().to_string(),
-                    title,
-                    source_type: "folder".to_string(),
-                });
-            }
+
+            books.push(BookCandidate {
+                path: path.to_string_lossy().to_string(),
+                title,
+                source_type: source_type.to_string(),
+            });
         }
     }
 }
 
 fn scan_directory_recursive(
     dir: &Path,
-    comics: &mut Vec<ComicCandidate>,
+    books: &mut Vec<BookCandidate>,
     visited: &mut HashSet<String>,
-    folder_cache: &mut HashMap<PathBuf, bool>,
-    added_image_folders: &mut HashSet<PathBuf>,
     current_depth: usize,
 ) -> Result<(), String> {
-    // Prevent stack overflow by limiting recursion depth
     if current_depth >= MAX_SCAN_DEPTH {
         return Ok(());
     }
 
-    // Resolve to canonical path to detect symlink cycles
     let canonical = match fs::canonicalize(dir) {
         Ok(c) => c.to_string_lossy().to_string(),
         Err(e) => return Err(format!("无法解析路径 {}: {}", dir.display(), e)),
     };
 
-    // Skip if already visited (symlink cycle detection)
     if visited.contains(&canonical) {
         return Ok(());
     }
@@ -174,67 +129,19 @@ fn scan_directory_recursive(
         };
 
         let path = entry.path();
-        
-        // Skip symlinks to avoid following external links or cycles
+
         if let Ok(metadata) = fs::symlink_metadata(&path) {
             if metadata.file_type().is_symlink() {
                 continue;
             }
         }
-        
+
         if path.is_dir() {
-            scan_directory_recursive(&path, comics, visited, folder_cache, added_image_folders, current_depth + 1)?;
+            scan_directory_recursive(&path, books, visited, current_depth + 1)?;
         } else if path.is_file() {
-            process_file_entry(&path, comics, added_image_folders, folder_cache);
+            process_file_entry(&path, books);
         }
     }
 
     Ok(())
-}
-
-fn folder_has_comic_archives(folder: &Path) -> bool {
-    if let Ok(entries) = fs::read_dir(folder) {
-        for entry in entries.flatten() {
-            if let Some(ext) = entry.path().extension() {
-                let ext_lower = ext.to_string_lossy().to_lowercase();
-                if COMIC_EXTENSIONS.contains(&ext_lower.as_str()) {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-pub fn get_folder_images(folder: &str) -> Vec<String> {
-    let path = PathBuf::from(folder);
-    let mut images = Vec::new();
-    
-    if let Ok(entries) = fs::read_dir(&path) {
-        for entry in entries.flatten() {
-            let file_path = entry.path();
-            if file_path.is_file() {
-                if let Some(ext) = file_path.extension() {
-                    let ext_lower = ext.to_string_lossy().to_lowercase();
-                    if IMAGE_EXTENSIONS.contains(&ext_lower.as_str()) {
-                        images.push(file_path.to_string_lossy().to_string());
-                    }
-                }
-            }
-        }
-    }
-    
-    // 预提取文件名，避免排序时重复调用 file_name() 创建字符串
-    let mut images_with_names: Vec<_> = images.into_iter()
-        .map(|p| {
-            let filename = Path::new(&p).file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            (p, filename)
-        })
-        .collect();
-    images_with_names.sort_by(|a, b| natural_cmp(&a.1, &b.1));
-    images = images_with_names.into_iter().map(|(p, _)| p).collect();
-    
-    images
 }

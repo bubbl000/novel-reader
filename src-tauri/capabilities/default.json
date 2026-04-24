@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for manga reader",
+  "description": "Default capabilities for novel reader",
   "local": true,
   "windows": ["*"],
   "permissions": [

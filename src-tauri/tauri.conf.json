@@ -1,7 +1,7 @@
 {
-  "productName": "manga-reader",
-  "version": "0.1.0",
-  "identifier": "com.mangareader.app",
+  "productName": "novel-reader",
+  "version": "0.2.0",
+  "identifier": "com.novelreader.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Manga Reader",
+        "title": "Novel Reader",
         "width": 1200,
         "height": 800,
         "resizable": true,

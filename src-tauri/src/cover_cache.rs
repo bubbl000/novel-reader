@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 /// 封面缓存目录
 fn cover_cache_dir() -> PathBuf {
-    let cache_dir = std::env::temp_dir().join("manga-reader-covers");
+    let cache_dir = std::env::temp_dir().join("novel-reader-covers");
     if !cache_dir.exists() {
         let _ = fs::create_dir_all(&cache_dir);
     }

@@ -88,7 +88,7 @@ pub fn create_subfolder(parent_path: &str, folder_name: &str) -> Result<String, 
     Ok(new_folder.to_string_lossy().to_string())
 }
 
-pub fn count_manga_in_folder(folder_path: &str, all_comics: &[crate::database::ComicMetadata]) -> usize {
+pub fn count_manga_in_folder(folder_path: &str, all_comics: &[crate::database::BookMetadata]) -> usize {
     all_comics.iter()
         .filter(|c| c.path.starts_with(folder_path))
         .count()

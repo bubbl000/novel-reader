@@ -1,80 +1,20 @@
 import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { saveComicMetadata, batchSaveComicMetadata, getAllComicsMetadata, getComicIdByPath, getComicByPath, ComicMetadata, ReadingProgress, Tag } from '../services/databaseService'
-import { SourceType, isValidSourceType, getSourceTypeDisplayName, inferSourceType } from '../types/sourceType'
+import { saveBookMetadata, batchSaveBookMetadata, getAllBooksMetadata, getBookIdByPath, getBookByPath, BookMetadata, Tag } from '../services/databaseService'
+import { SourceType } from '../types/sourceType'
 
-// 全局封面缓存：path -> blobUrl
-const coverCache = new Map<string, string>()
-// 正在生成中的封面 Promise
-const coverPromiseCache = new Map<string, Promise<string | null>>()
-
-// 封面串行队列，确保按顺序逐个加载
-interface CoverRequest {
-  path: string
-  sourceType: string
-  resolve: (url: string | null) => void
-}
-const coverRequestQueue: CoverRequest[] = []
-let isProcessingCover = false
-
-async function processNextCover() {
-  if (isProcessingCover || coverRequestQueue.length === 0) return
-  isProcessingCover = true
-
-  const request = coverRequestQueue.shift()!
-  try {
-    const bytes = await invoke<number[]>('generate_cover_thumbnail', { path: request.path })
-    if (bytes && bytes.length > 0) {
-      const blob = new Blob([new Uint8Array(bytes)], { type: 'image/jpeg' })
-      const url = URL.createObjectURL(blob)
-      coverCache.set(request.path, url)
-      coverPromiseCache.delete(request.path)
-      request.resolve(url)
-    } else {
-      request.resolve(null)
-    }
-  } catch {
-    request.resolve(null)
-  }
-  coverPromiseCache.delete(request.path)
-
-  isProcessingCover = false
-  // 下一个封面
-  processNextCover()
-}
-
-/**
- * 按顺序串行生成封面，确保一个完成后再加载下一个
- */
-export async function generateCoverThumbnail(mangaPath: string, sourceType: string): Promise<string | null> {
-  if (sourceType === 'folder') return null
-  if (coverCache.has(mangaPath)) return coverCache.get(mangaPath) || null
-  if (coverPromiseCache.has(mangaPath)) return coverPromiseCache.get(mangaPath) || null
-
-  const promise = new Promise<string | null>((resolve) => {
-    coverRequestQueue.push({ path: mangaPath, sourceType, resolve })
-    // 触发队列处理
-    processNextCover()
-  })
-
-  coverPromiseCache.set(mangaPath, promise)
-  return promise
-}
-
-// 全局拖拽文件回调
 let globalDropCallback: ((paths: string[]) => void) | null = null
 
 export function setDropCallback(cb: (paths: string[]) => void) {
   globalDropCallback = cb
 }
 
-// 初始化拖拽事件监听（只调用一次）
 let dragDropInitialized = false
 export function initDragDropListener() {
   if (dragDropInitialized) return
   dragDropInitialized = true
-  
+
   listen<string[]>('tauri://file-drop', (event) => {
     if (globalDropCallback) {
       globalDropCallback(event.payload)
@@ -92,7 +32,7 @@ export interface FolderNode {
   children: FolderNode[]
 }
 
-export interface MangaItem {
+export interface BookItem {
   id: string
   title: string
   path: string
@@ -106,13 +46,15 @@ export interface MangaItem {
   formatText: string
   fileSizeText: string
   progressPercentage: number
-  coverThumbnail: string | null
+  author: string
+  wordCount: number
+  chapterCount: number
 }
 
-interface MangaStore {
-  mangaList: MangaItem[]
-  filteredMangaList: MangaItem[]
-  pagedMangaList: MangaItem[]
+interface BookStore {
+  bookList: BookItem[]
+  filteredBookList: BookItem[]
+  pagedBookList: BookItem[]
   folderTree: FolderNode[]
   libraryPaths: string[]
   isLoading: boolean
@@ -124,9 +66,9 @@ interface MangaStore {
   showTagManagement: boolean
   selectedFolder: string | null
   selectedFolderName: string
-  selectedManga: MangaItem | null
+  selectedBook: BookItem | null
   selectedTag: string | null
-  mangaTags: Tag[]
+  bookTags: Tag[]
   allTags: Tag[]
   currentPage: number
   pageSize: number
@@ -136,17 +78,16 @@ interface MangaStore {
   totalPages: number
   sortBy: string
   coverSize: number
-  autoPageInterval: number
 
   loadLibrary: () => Promise<void>
   addLibraryPath: (path: string) => Promise<void>
   removeLibraryPath: (path: string) => Promise<void>
   scanAndLoad: () => Promise<void>
-  saveToDatabase: (manga: MangaItem) => Promise<void>
-  updateReadingProgress: (mangaId: string, currentPage: number, totalPages: number, mangaPath?: string) => Promise<void>
-  toggleFavorite: (manga: MangaItem) => Promise<void>
+  saveToDatabase: (book: BookItem) => Promise<void>
+  updateReadingProgress: (bookId: string, currentPage: number, totalPages: number, bookPath?: string) => Promise<void>
+  toggleFavorite: (book: BookItem) => Promise<void>
   selectFolder: (folderPath: string) => void
-  selectManga: (manga: MangaItem | null) => Promise<void>
+  selectBook: (book: BookItem | null) => Promise<void>
   setSearchQuery: (query: string) => void
   setViewMode: (mode: 'library' | 'favorites' | 'tags') => void
   toggleTagCloud: () => void
@@ -156,33 +97,31 @@ interface MangaStore {
   setPageSize: (size: number) => void
   togglePaginationMode: () => void
   setCoverSize: (size: number) => void
-  setAutoPageInterval: (interval: number) => void
   applyFilters: () => Promise<void>
-  loadMangaTags: (manga: MangaItem) => Promise<void>
-  addTag: (manga: MangaItem, tagName: string) => Promise<void>
-  removeTag: (manga: MangaItem, tagId: number) => Promise<void>
+  loadBookTags: (book: BookItem) => Promise<void>
+  addTag: (book: BookItem, tagName: string) => Promise<void>
+  removeTag: (book: BookItem, tagId: number) => Promise<void>
   loadAllTags: () => Promise<void>
   selectTag: (tagName: string | null) => Promise<void>
   loadFavorites: () => Promise<void>
 }
 
-function buildFolderTree(paths: string[], mangaList: MangaItem[], allFolderPaths: string[] = []): FolderNode[] {
+function buildFolderTree(paths: string[], bookList: BookItem[], allFolderPaths: string[] = []): FolderNode[] {
   if (paths.length === 0) return []
-  
+
   const rootName = paths[0]
-  
-  const mangaCountMap = new Map<string, number>()
-  mangaList.forEach(m => {
-    mangaCountMap.set(m.folderPath, (mangaCountMap.get(m.folderPath) || 0) + 1)
+
+  const bookCountMap = new Map<string, number>()
+  bookList.forEach(b => {
+    bookCountMap.set(b.folderPath, (bookCountMap.get(b.folderPath) || 0) + 1)
   })
-  
+
   const folderSet = new Set(allFolderPaths)
-  mangaCountMap.forEach((_, folder) => folderSet.add(folder))
-  
+  bookCountMap.forEach((_, folder) => folderSet.add(folder))
+
   const nodes: FolderNode[] = []
   const pathToNode = new Map<string, FolderNode>()
-  
-  // 预计算深度值，避免 sort 中重复 split
+
   const foldersWithDepth = Array.from(folderSet)
     .filter(f => f.startsWith(rootName) && f !== rootName)
     .map(f => ({ path: f, depth: f.split(/[\\/]/).length }))
@@ -190,45 +129,45 @@ function buildFolderTree(paths: string[], mangaList: MangaItem[], allFolderPaths
       if (a.depth !== b.depth) return a.depth - b.depth
       return a.path.localeCompare(b.path)
     })
-  
+
   foldersWithDepth.forEach(({ path: folderPath }) => {
     const relativePath = folderPath.substring(rootName.length).replace(/^[\\/]/, '')
     const parts = relativePath.split(/[\\/]/)
     const folderName = parts[parts.length - 1]
-    
+
     const parentRelativePath = parts.slice(0, -1).join('\\')
     const parentFullPath = rootName + '\\' + parentRelativePath
     const parentNode = pathToNode.get(parentFullPath)
-    
+
     const node: FolderNode = {
       id: folderPath,
       name: folderName,
       path: folderPath,
       isExpanded: false,
       isSelected: false,
-      count: mangaCountMap.get(folderPath) || 0,
+      count: bookCountMap.get(folderPath) || 0,
       children: [],
     }
-    
+
     if (parentNode) {
       parentNode.children.push(node)
     } else {
       nodes.push(node)
     }
-    
+
     pathToNode.set(folderPath, node)
   })
-  
+
   const lastSepIndex = Math.max(rootName.lastIndexOf('\\'), rootName.lastIndexOf('/'))
   const rootFolderName = lastSepIndex >= 0 ? rootName.substring(lastSepIndex + 1) : rootName
-  
+
   return [{
     id: rootName,
     name: rootFolderName,
     path: rootName,
     isExpanded: true,
     isSelected: true,
-    count: mangaList.length,
+    count: bookList.length,
     children: nodes.sort((a, b) => a.name.localeCompare(b.name)),
   }]
 }
@@ -240,26 +179,26 @@ interface ScanAndBuildParams {
 }
 
 interface ScanBuildResult {
-  mangaList: MangaItem[]
-  comicMetadataList: ComicMetadata[]
+  bookList: BookItem[]
+  bookMetadataList: BookMetadata[]
   folderTree: FolderNode[]
   totalCount: number
   totalPages: number
-  pagedMangaList: MangaItem[]
+  pagedBookList: BookItem[]
 }
 
-async function scanAndBuildMangaList(params: ScanAndBuildParams): Promise<ScanBuildResult> {
+async function scanAndBuildBookList(params: ScanAndBuildParams): Promise<ScanBuildResult> {
   const { paths, setLoading, onComplete } = params
   setLoading(true)
 
   try {
-    const allManga: MangaItem[] = []
-    const allComics: ComicMetadata[] = []
+    const allBooks: BookItem[] = []
+    const allBookMetadata: BookMetadata[] = []
 
     const scanResults = await Promise.allSettled(
       paths.map(async (path) => {
         const result = await invoke<{
-          comics: Array<{ path: string; title: string; source_type: string }>
+          books: Array<{ path: string; title: string; source_type: string }>
           error: string | null
         }>('scan_directory', { directory: path })
         return { path, result }
@@ -272,74 +211,76 @@ async function scanAndBuildMangaList(params: ScanAndBuildParams): Promise<ScanBu
         continue
       }
       const { result } = scanResult.value
-      if (result.comics) {
-          for (const comic of result.comics) {
-            const folderPath =
-              comic.source_type === 'folder'
-                ? comic.path
-                : comic.path.substring(0, Math.max(comic.path.lastIndexOf('\\'), comic.path.lastIndexOf('/')))
+      if (result.books) {
+        for (const book of result.books) {
+          const folderPath =
+            book.path.substring(0, Math.max(book.path.lastIndexOf('\\'), book.path.lastIndexOf('/')))
 
-            const formatText =
-              comic.source_type === 'folder'
-                ? '文件夹'
-                : comic.source_type === 'pdf'
-                ? 'PDF'
-                : comic.source_type.toUpperCase()
+          const formatText =
+            book.source_type === 'pdf'
+              ? 'PDF'
+              : book.source_type === 'txt'
+              ? 'TXT'
+              : book.source_type === 'md'
+              ? 'MD'
+              : book.source_type.toUpperCase()
 
-            const mangaItem: MangaItem = {
-              id: '0',
-              title: comic.title,
-              path: comic.path,
-              folderPath,
-              sourceType: comic.source_type as SourceType,
-              isFavorite: false,
-              currentPage: 0,
-              totalPages: 0,
-              addedDate: new Date().toISOString(),
-              lastOpened: '',
-              formatText,
-              fileSizeText: '',
-              progressPercentage: 0,
-              coverThumbnail: null,
-            }
-            allManga.push(mangaItem)
-
-            allComics.push({
-              path: comic.path,
-              title: comic.title,
-              source_type: comic.source_type,
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            })
+          const bookItem: BookItem = {
+            id: '0',
+            title: book.title,
+            path: book.path,
+            folderPath,
+            sourceType: book.source_type as SourceType,
+            isFavorite: false,
+            currentPage: 0,
+            totalPages: 0,
+            addedDate: new Date().toISOString(),
+            lastOpened: '',
+            formatText,
+            fileSizeText: '',
+            progressPercentage: 0,
+            author: '',
+            wordCount: 0,
+            chapterCount: 0,
           }
+          allBooks.push(bookItem)
+
+          allBookMetadata.push({
+            path: book.path,
+            title: book.title,
+            source_type: book.source_type,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
         }
       }
+    }
 
-    if (allComics.length > 0) {
-      const dbIds = await batchSaveComicMetadata(allComics)
-      allManga.forEach((manga, i) => {
+    if (allBookMetadata.length > 0) {
+      const dbIds = await batchSaveBookMetadata(allBookMetadata)
+      allBooks.forEach((book, i) => {
         if (i < dbIds.length) {
-          manga.id = String(dbIds[i])
+          book.id = String(dbIds[i])
         }
       })
     }
 
-    const allDbComics = await getAllComicsMetadata()
+    const allDbBooks = await getAllBooksMetadata()
     const progressMap = new Map<string, { current_page: number; total_pages: number }>()
-    allDbComics.forEach(c => {
-      if (c.path) {
-        progressMap.set(c.path, {
-          current_page: c.current_page || 0,
-          total_pages: c.total_pages || 0,
+    allDbBooks.forEach(b => {
+      if (b.path) {
+        progressMap.set(b.path, {
+          current_page: b.current_page || 0,
+          total_pages: b.total_pages || 0,
         })
       }
     })
-    allManga.forEach(manga => {
-      const progress = progressMap.get(manga.path)
+    allBooks.forEach(book => {
+      const progress = progressMap.get(book.path)
       if (progress) {
-        manga.currentPage = progress.current_page
-        manga.totalPages = progress.total_pages
-        manga.progressPercentage = progress.total_pages > 0 ? (progress.current_page / progress.total_pages) * 100 : 0
+        book.currentPage = progress.current_page
+        book.totalPages = progress.total_pages
+        book.progressPercentage = progress.total_pages > 0 ? (progress.current_page / progress.total_pages) * 100 : 0
       }
     })
 
@@ -352,29 +293,29 @@ async function scanAndBuildMangaList(params: ScanAndBuildParams): Promise<ScanBu
       }
     }
 
-    const folderTree = buildFolderTree(paths, allManga, allSubfolders)
+    const folderTree = buildFolderTree(paths, allBooks, allSubfolders)
 
-    const favComics = await invoke<ComicMetadata[]>('get_favorite_comics')
-    const favPaths = new Set(favComics.map(c => c.path))
-    const updatedManga = allManga.map(m => ({
-      ...m,
-      isFavorite: favPaths.has(m.path),
+    const favBooks = await invoke<BookMetadata[]>('get_favorite_books')
+    const favPaths = new Set(favBooks.map(b => b.path))
+    const updatedBooks = allBooks.map(b => ({
+      ...b,
+      isFavorite: favPaths.has(b.path),
     }))
 
-    const totalCount = updatedManga.length
+    const totalCount = updatedBooks.length
     const totalPages = Math.max(1, Math.ceil(totalCount / 50))
-    const paged = updatedManga.slice(0, 50)
+    const paged = updatedBooks.slice(0, 50)
 
     setLoading(false)
     onComplete()
 
     return {
-      mangaList: updatedManga,
-      comicMetadataList: allComics,
+      bookList: updatedBooks,
+      bookMetadataList: allBookMetadata,
       folderTree,
       totalCount,
       totalPages,
-      pagedMangaList: paged,
+      pagedBookList: paged,
     }
   } catch (e) {
     setLoading(false)
@@ -382,10 +323,10 @@ async function scanAndBuildMangaList(params: ScanAndBuildParams): Promise<ScanBu
   }
 }
 
-export const useMangaStore = create<MangaStore>((set, get) => ({
-  mangaList: [],
-  filteredMangaList: [],
-  pagedMangaList: [],
+export const useMangaStore = create<BookStore>((set, get) => ({
+  bookList: [],
+  filteredBookList: [],
+  pagedBookList: [],
   folderTree: [],
   libraryPaths: [],
   isLoading: false,
@@ -397,9 +338,9 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
   showTagManagement: false,
   selectedFolder: null,
   selectedFolderName: '',
-  selectedManga: null,
+  selectedBook: null,
   selectedTag: null,
-  mangaTags: [],
+  bookTags: [],
   allTags: [],
   currentPage: 1,
   pageSize: 20,
@@ -409,7 +350,6 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
   totalPages: 0,
   sortBy: 'name',
   coverSize: 180,
-  autoPageInterval: 3000,
 
   loadLibrary: async () => {
     set({ isLoading: true, error: null })
@@ -422,21 +362,21 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
         set({ selectedFolder: paths[0], selectedFolderName: paths[0] })
       }
 
-      const result = await scanAndBuildMangaList({
+      const result = await scanAndBuildBookList({
         paths,
         setLoading: (loading) => set({ isLoading: loading }),
         onComplete: () => get().loadAllTags(),
       })
 
-      set({ 
-        mangaList: result.mangaList, 
-        filteredMangaList: result.mangaList,
-        pagedMangaList: result.pagedMangaList,
+      set({
+        bookList: result.bookList,
+        filteredBookList: result.bookList,
+        pagedBookList: result.pagedBookList,
         folderTree: result.folderTree,
         totalCount: result.totalCount,
         totalFilteredCount: result.totalCount,
         totalPages: result.totalPages,
-        isLoading: false 
+        isLoading: false
       })
     } catch (e) {
       set({ error: `加载书库失败: ${e}`, isLoading: false })
@@ -468,120 +408,120 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
     try {
       const paths = get().libraryPaths
 
-      const result = await scanAndBuildMangaList({
+      const result = await scanAndBuildBookList({
         paths,
         setLoading: (loading) => set({ isScanning: loading }),
         onComplete: () => get().applyFilters(),
       })
 
-      set({ 
-        mangaList: result.mangaList, 
-        filteredMangaList: result.mangaList,
-        pagedMangaList: result.pagedMangaList,
+      set({
+        bookList: result.bookList,
+        filteredBookList: result.bookList,
+        pagedBookList: result.pagedBookList,
         folderTree: result.folderTree,
         totalCount: result.totalCount,
         totalFilteredCount: result.totalCount,
         totalPages: result.totalPages,
-        isScanning: false 
+        isScanning: false
       })
     } catch (e) {
       set({ error: `扫描失败: ${e}`, isScanning: false })
     }
   },
 
-  saveToDatabase: async (manga: MangaItem) => {
+  saveToDatabase: async (book: BookItem) => {
     try {
-      const metadata: ComicMetadata = {
-        path: manga.path,
-        title: manga.title,
-        source_type: manga.sourceType,
-        page_count: manga.totalPages || undefined,
+      const metadata: BookMetadata = {
+        path: book.path,
+        title: book.title,
+        source_type: book.sourceType,
+        page_count: book.totalPages || undefined,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }
-      await saveComicMetadata(metadata)
+      await saveBookMetadata(metadata)
     } catch (e) {
-      console.error(`保存漫画元数据失败:`, e)
-      set({ error: '保存漫画元数据失败' })
+      console.error('保存书籍元数据失败:', e)
+      set({ error: '保存书籍元数据失败' })
     }
   },
 
-  updateReadingProgress: async (mangaId: string, currentPage: number, totalPages: number, mangaPath?: string) => {
+  updateReadingProgress: async (bookId: string, currentPage: number, totalPages: number, bookPath?: string) => {
     try {
-      let targetManga = get().mangaList.find(m => m.id === mangaId)
-      if (!targetManga && mangaPath) {
-        targetManga = get().mangaList.find(m => m.path === mangaPath)
+      let targetBook = get().bookList.find(b => b.id === bookId)
+      if (!targetBook && bookPath) {
+        targetBook = get().bookList.find(b => b.path === bookPath)
       }
-      if (targetManga) {
-        const matchId = targetManga.id
+      if (targetBook) {
+        const matchId = targetBook.id
         set(state => ({
-          mangaList: state.mangaList.map(m => 
-            m.id === matchId 
-              ? { ...m, currentPage, totalPages, progressPercentage: totalPages > 0 ? (currentPage / totalPages) * 100 : 0 }
-              : m
+          bookList: state.bookList.map(b =>
+            b.id === matchId
+              ? { ...b, currentPage, totalPages, progressPercentage: totalPages > 0 ? (currentPage / totalPages) * 100 : 0 }
+              : b
           ),
-          filteredMangaList: state.filteredMangaList.map(m => 
-            m.id === matchId 
-              ? { ...m, currentPage, totalPages, progressPercentage: totalPages > 0 ? (currentPage / totalPages) * 100 : 0 }
-              : m
+          filteredBookList: state.filteredBookList.map(b =>
+            b.id === matchId
+              ? { ...b, currentPage, totalPages, progressPercentage: totalPages > 0 ? (currentPage / totalPages) * 100 : 0 }
+              : b
           ),
-          pagedMangaList: state.pagedMangaList.map(m => 
-            m.id === matchId 
-              ? { ...m, currentPage, totalPages, progressPercentage: totalPages > 0 ? (currentPage / totalPages) * 100 : 0 }
-              : m
+          pagedBookList: state.pagedBookList.map(b =>
+            b.id === matchId
+              ? { ...b, currentPage, totalPages, progressPercentage: totalPages > 0 ? (currentPage / totalPages) * 100 : 0 }
+              : b
           ),
-          selectedManga: state.selectedManga && state.selectedManga.id === matchId
-            ? { ...state.selectedManga, currentPage, totalPages, progressPercentage: totalPages > 0 ? (currentPage / totalPages) * 100 : 0 }
-            : state.selectedManga
+          selectedBook: state.selectedBook && state.selectedBook.id === matchId
+            ? { ...state.selectedBook, currentPage, totalPages, progressPercentage: totalPages > 0 ? (currentPage / totalPages) * 100 : 0 }
+            : state.selectedBook
         }))
-        
-        await invoke('save_reading_progress', { 
-          comicId: parseInt(matchId), 
-          currentPage, 
-          totalPages 
+
+        await invoke('save_reading_progress', {
+          bookId: parseInt(matchId),
+          currentPage,
+          totalPages
         })
       }
     } catch (e) {
-      console.error(`保存阅读进度失败:`, e)
+      console.error('保存阅读进度失败:', e)
       set({ error: '保存阅读进度失败' })
     }
   },
 
-  toggleFavorite: async (manga: MangaItem) => {
+  toggleFavorite: async (book: BookItem) => {
     try {
-      const comicId = await getComicIdByPath(manga.path)
-      
-      if (!comicId) return
-      
-      const isFav = await invoke<boolean>('is_favorite', { comicId })
-      
+      const bookId = await getBookIdByPath(book.path)
+
+      if (!bookId) return
+
+      const isFav = await invoke<boolean>('is_favorite', { bookId })
+
       if (isFav) {
-        await invoke('remove_from_favorites', { comicId })
+        await invoke('remove_from_favorites', { bookId })
       } else {
-        await invoke('add_to_favorites', { comicId })
+        await invoke('add_to_favorites', { bookId })
       }
-      
+
       const newFavState = !isFav
-      
+
       set(state => ({
-        mangaList: state.mangaList.map(m => 
-          m.id === manga.id ? { ...m, isFavorite: newFavState } : m
+        bookList: state.bookList.map(b =>
+          b.id === book.id ? { ...b, isFavorite: newFavState } : b
         ),
-        filteredMangaList: state.filteredMangaList.map(m => 
-          m.id === manga.id ? { ...m, isFavorite: newFavState } : m
+        filteredBookList: state.filteredBookList.map(b =>
+          b.id === book.id ? { ...b, isFavorite: newFavState } : b
         ),
-        selectedManga: state.selectedManga && state.selectedManga.id === manga.id
-          ? { ...state.selectedManga, isFavorite: newFavState }
-          : state.selectedManga
+        selectedBook: state.selectedBook && state.selectedBook.id === book.id
+          ? { ...state.selectedBook, isFavorite: newFavState }
+          : state.selectedBook
       }))
     } catch (e) {
-      console.error(`切换收藏状态失败:`, e)
+      console.error('切换收藏状态失败:', e)
       set({ error: '切换收藏状态失败' })
     }
   },
 
   selectFolder: (folderPath: string) => {
-    set({ 
+    set({
       selectedFolder: folderPath,
       selectedFolderName: folderPath,
       currentPage: 1,
@@ -589,26 +529,28 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
     get().applyFilters()
   },
 
-  selectManga: async (manga: MangaItem | null) => {
-    set({ selectedManga: manga })
-    if (manga) {
-      await get().loadMangaTags(manga)
+  selectBook: async (book: BookItem | null) => {
+    set({ selectedBook: book })
+    if (book) {
+      await get().loadBookTags(book)
       try {
-        const comic = await getComicByPath(manga.path)
-        if (comic) {
-          const updatedManga = {
-            ...manga,
-            addedDate: comic.created_at || manga.addedDate,
-            lastOpened: comic.last_opened || manga.lastOpened,
+        const dbBook = await getBookByPath(book.path)
+        if (dbBook) {
+          const updatedBook = {
+            ...book,
+            addedDate: dbBook.created_at || book.addedDate,
+            lastOpened: dbBook.last_opened || book.lastOpened,
+            author: dbBook.author || book.author,
+            wordCount: dbBook.word_count || book.wordCount,
+            chapterCount: dbBook.chapter_count || book.chapterCount,
           }
-          set({ selectedManga: updatedManga })
+          set({ selectedBook: updatedBook })
         }
       } catch (e) {
-        console.error('加载漫画元数据失败:', e)
-        set({ error: '加载漫画元数据失败' })
+        console.error('加载书籍元数据失败:', e)
       }
     } else {
-      set({ mangaTags: [] })
+      set({ bookTags: [] })
     }
   },
 
@@ -623,7 +565,7 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
   },
 
   toggleTagCloud: () => {
-    set(state => ({ 
+    set(state => ({
       showTagCloud: !state.showTagCloud,
       currentViewMode: !state.showTagCloud ? 'tags' : 'library'
     }))
@@ -658,51 +600,41 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
     set({ coverSize: size })
   },
 
-  setAutoPageInterval: (interval: number) => {
-    set({ autoPageInterval: interval })
-  },
-
   applyFilters: async () => {
-    const { mangaList, searchQuery, selectedFolder, selectedTag, currentViewMode, sortBy, currentPage, pageSize } = get()
-    
-    // 使用链式操作避免中间数组副本
-    let filtered = mangaList
-    
-    // 收藏模式过滤
+    const { bookList, searchQuery, selectedFolder, selectedTag, currentViewMode, sortBy, currentPage, pageSize } = get()
+
+    let filtered = bookList
+
     if (currentViewMode === 'favorites') {
-      filtered = filtered.filter(m => m.isFavorite)
+      filtered = filtered.filter(b => b.isFavorite)
     } else if (currentViewMode === 'tags' && !selectedTag) {
-      // 标签模式且未选择标签时，显示标签列表（由前端组件处理）
       const totalCount = filtered.length
       const totalPages = Math.max(1, Math.ceil(totalCount / pageSize))
       const start = (currentPage - 1) * pageSize
       const paged = filtered.slice(start, start + pageSize)
-      
-      set({ 
-        filteredMangaList: filtered,
-        pagedMangaList: paged,
+
+      set({
+        filteredBookList: filtered,
+        pagedBookList: paged,
         totalFilteredCount: totalCount,
         totalPages,
       })
       return
     }
-    
-    // 文件夹过滤
+
     if (selectedFolder && !selectedTag) {
-      filtered = filtered.filter(m => m.folderPath.startsWith(selectedFolder))
+      filtered = filtered.filter(b => b.folderPath.startsWith(selectedFolder))
     }
-    
-    // 标签或搜索过滤
+
     if (selectedTag) {
-      const comics = await invoke<ComicMetadata[]>('get_comics_by_tag', { tagName: selectedTag })
-      const comicPaths = new Set(comics.map(c => c.path))
-      filtered = filtered.filter(m => comicPaths.has(m.path))
+      const books = await invoke<BookMetadata[]>('get_books_by_tag', { tagName: selectedTag })
+      const bookPaths = new Set(books.map(b => b.path))
+      filtered = filtered.filter(b => bookPaths.has(b.path))
     } else if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase()
-      filtered = filtered.filter(m => m.title.toLowerCase().includes(query))
+      filtered = filtered.filter(b => b.title.toLowerCase().includes(query) || b.author.toLowerCase().includes(query))
     }
-    
-    // 排序
+
     filtered.sort((a, b) => {
       switch (sortBy) {
         case 'name':
@@ -715,70 +647,66 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
           return 0
       }
     })
-    
+
     const totalCount = filtered.length
     const { isPaginationMode } = get()
-    
+
     if (isPaginationMode) {
       const totalPages = Math.max(1, Math.ceil(totalCount / pageSize))
       const start = (currentPage - 1) * pageSize
       const paged = filtered.slice(start, start + pageSize)
-      
-      set({ 
-        filteredMangaList: filtered,
-        pagedMangaList: paged,
+
+      set({
+        filteredBookList: filtered,
+        pagedBookList: paged,
         totalFilteredCount: totalCount,
         totalPages,
       })
     } else {
-      // 全部展示模式
-      set({ 
-        filteredMangaList: filtered,
-        pagedMangaList: filtered,
+      set({
+        filteredBookList: filtered,
+        pagedBookList: filtered,
         totalFilteredCount: totalCount,
         totalPages: 1,
       })
     }
   },
 
-  loadMangaTags: async (manga: MangaItem) => {
+  loadBookTags: async (book: BookItem) => {
     try {
-      const comicId = await getComicIdByPath(manga.path)
-      if (comicId) {
-        const tags = await invoke<Tag[]>('get_comic_tags', { comicId })
-        set({ mangaTags: tags })
+      const bookId = await getBookIdByPath(book.path)
+      if (bookId) {
+        const tags = await invoke<Tag[]>('get_book_tags', { bookId })
+        set({ bookTags: tags })
       }
     } catch (e) {
-      console.error(`加载标签失败:`, e)
-      set({ error: '加载标签失败' })
+      console.error('加载标签失败:', e)
     }
   },
 
-  addTag: async (manga: MangaItem, tagName: string) => {
+  addTag: async (book: BookItem, tagName: string) => {
     try {
-      const comicId = await getComicIdByPath(manga.path)
-      if (comicId) {
-        await invoke('add_tag_to_comic', { comicId, tagName })
-        await get().loadMangaTags(manga)
+      const bookId = await getBookIdByPath(book.path)
+      if (bookId) {
+        await invoke('add_tag_to_book', { bookId, tagName })
+        await get().loadBookTags(book)
         await get().loadAllTags()
       }
     } catch (e) {
-      console.error(`添加标签失败:`, e)
-      set({ error: '添加标签失败' })
+      console.error('添加标签失败:', e)
     }
   },
 
-  removeTag: async (manga: MangaItem, tagId: number) => {
+  removeTag: async (book: BookItem, tagId: number) => {
     try {
-      const comicId = await getComicIdByPath(manga.path)
-      if (comicId) {
-        await invoke('remove_tag_from_comic', { comicId, tagId })
-        await get().loadMangaTags(manga)
+      const bookId = await getBookIdByPath(book.path)
+      if (bookId) {
+        await invoke('remove_tag_from_book', { bookId, tagId })
+        await get().loadBookTags(book)
         await get().loadAllTags()
       }
     } catch (e) {
-      console.error(`移除标签失败:`, e)
-      set({ error: '移除标签失败' })
+      console.error('移除标签失败:', e)
     }
   },
 
@@ -787,13 +715,12 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
       const tags = await invoke<Tag[]>('get_all_tags')
       set({ allTags: tags })
     } catch (e) {
-      console.error(`加载所有标签失败:`, e)
-      set({ error: '加载所有标签失败' })
+      console.error('加载所有标签失败:', e)
     }
   },
 
   selectTag: async (tagName: string | null) => {
-    set({ 
+    set({
       selectedTag: tagName,
       currentPage: 1,
     })
@@ -802,19 +729,18 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
 
   loadFavorites: async () => {
     try {
-      const favComics = await invoke<ComicMetadata[]>('get_favorite_comics')
-      const favPaths = new Set(favComics.map(c => c.path))
-      
+      const favBooks = await invoke<BookMetadata[]>('get_favorite_books')
+      const favPaths = new Set(favBooks.map(b => b.path))
+
       set(state => ({
-        mangaList: state.mangaList.map(m => ({
-          ...m,
-          isFavorite: favPaths.has(m.path),
+        bookList: state.bookList.map(b => ({
+          ...b,
+          isFavorite: favPaths.has(b.path),
         })),
       }))
       get().applyFilters()
     } catch (e) {
-      console.error(`加载收藏失败:`, e)
-      set({ error: '加载收藏失败' })
+      console.error('加载收藏失败:', e)
     }
   },
 }))

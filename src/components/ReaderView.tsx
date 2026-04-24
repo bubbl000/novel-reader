@@ -1,1352 +1,988 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { invoke } from '@tauri-apps/api/core'
-import * as pdfjsLib from 'pdfjs-dist'
 import * as databaseService from '../services/databaseService'
-import { useMangaStore } from '../stores/mangaStore'
 import { RxCross2, RxChevronLeft, RxChevronRight } from 'react-icons/rx'
 
-/**
- * LRU 缓存实现
- * 支持容量限制，超出时自动淘汰最久未使用的条目
- * 淘汰时自动调用 onEvict 回调释放 Blob URL
- */
-class LRUCache<K, V> {
-  private cache: Map<K, V>
-  private readonly maxSize: number
-  private readonly onEvict?: (value: V) => void
+// ---------------------------------------------------------------------------
+// Type definitions
+// ---------------------------------------------------------------------------
 
-  constructor(maxSize: number, onEvict?: (value: V) => void) {
-    this.cache = new Map()
-    this.maxSize = maxSize
-    this.onEvict = onEvict
-  }
+type ReadMode = 'paginated' | 'scroll'
+type ThemeMode = 'dark' | 'light' | 'sepia'
 
-  get(key: K): V | undefined {
-    const value = this.cache.get(key)
-    if (value !== undefined) {
-      // 访问时将键移至最新位置
-      this.cache.delete(key)
-      this.cache.set(key, value)
-    }
-    return value
-  }
+interface ThemeColors {
+  bg: string
+  text: string
+  secondary: string
+  panel: string
+  border: string
+  codeBg: string
+  quoteBorder: string
+  linkColor: string
+}
 
-  set(key: K, value: V): void {
-    // 如果键已存在，先删除再插入以更新位置
-    if (this.cache.has(key)) {
-      this.cache.delete(key)
-    }
-    this.cache.set(key, value)
-    // 超出容量时淘汰最旧条目
-    while (this.cache.size > this.maxSize) {
-      const oldestKey = this.cache.keys().next().value
-      if (oldestKey !== undefined) {
-        const oldestValue = this.cache.get(oldestKey)
-        if (oldestValue) this.onEvict?.(oldestValue)
-        this.cache.delete(oldestKey)
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const THEMES: Record<ThemeMode, ThemeColors> = {
+  dark: {
+    bg: '#1A1A1A',
+    text: '#E0E0E0',
+    secondary: '#909090',
+    panel: '#212121',
+    border: '#363636',
+    codeBg: '#2A2A2A',
+    quoteBorder: '#555555',
+    linkColor: '#CBE93A',
+  },
+  light: {
+    bg: '#FFFFFF',
+    text: '#1A1A1A',
+    secondary: '#666666',
+    panel: '#F5F5F5',
+    border: '#E0E0E0',
+    codeBg: '#F0F0F0',
+    quoteBorder: '#CCCCCC',
+    linkColor: '#6B8E23',
+  },
+  sepia: {
+    bg: '#F4ECD8',
+    text: '#5B4636',
+    secondary: '#8B7355',
+    panel: '#EDE4D0',
+    border: '#D4C5A9',
+    codeBg: '#EDE4D0',
+    quoteBorder: '#C4B59A',
+    linkColor: '#6B8E23',
+  },
+}
+
+const FONT_SIZE_MIN = 12
+const FONT_SIZE_MAX = 36
+const FONT_SIZE_STEP = 2
+const LINE_HEIGHT_MIN = 1.2
+const LINE_HEIGHT_MAX = 3.0
+const LINE_HEIGHT_STEP = 0.2
+
+/** Base characters per page for TXT at font-size 18px */
+const CHARS_PER_PAGE_BASE = 1200
+
+// ---------------------------------------------------------------------------
+// Helper: split plain text into page-sized chunks
+// ---------------------------------------------------------------------------
+
+function splitTextIntoPages(text: string, charsPerPage: number): string[] {
+  if (!text) return ['']
+  const pages: string[] = []
+  let pos = 0
+  while (pos < text.length) {
+    let end = Math.min(pos + charsPerPage, text.length)
+    // Try to break at a newline or space to avoid mid-word splits
+    if (end < text.length) {
+      const lastNewline = text.lastIndexOf('\n', end)
+      const lastSpace = text.lastIndexOf(' ', end)
+      if (lastNewline > pos + charsPerPage * 0.5) {
+        end = lastNewline + 1
+      } else if (lastSpace > pos + charsPerPage * 0.5) {
+        end = lastSpace + 1
       }
     }
+    pages.push(text.substring(pos, end))
+    pos = end
   }
-
-  has(key: K): boolean {
-    return this.cache.has(key)
-  }
-
-  clear(): void {
-    this.cache.forEach(value => this.onEvict?.(value))
-    this.cache.clear()
-  }
-
-  get size(): number {
-    return this.cache.size
-  }
-
-  keys(): K[] {
-    return Array.from(this.cache.keys())
-  }
+  return pages.length > 0 ? pages : ['']
 }
 
-/**
- * 图片压缩工具
- * 使用 Canvas 对大尺寸图片进行压缩，减少内存占用和渲染压力
- * 配置：maxWidth 1920, maxHeight 2880, jpegQuality 0.85
- * 图片尺寸小于阈值时跳过压缩，避免不必要的处理开销
- */
-const COMPRESS_CONFIG = {
-  maxWidth: 1280,
-  maxHeight: 1920,
-  jpegQuality: 0.75,
+// ---------------------------------------------------------------------------
+// Inline CSS for rendered Markdown content (scoped via .novel-md-content)
+// ---------------------------------------------------------------------------
+
+const MD_CONTENT_STYLES = `
+.novel-md-content h1 { font-size: 1.8em; font-weight: 700; margin: 0.8em 0 0.4em; line-height: 1.3; }
+.novel-md-content h2 { font-size: 1.5em; font-weight: 700; margin: 0.7em 0 0.35em; line-height: 1.3; }
+.novel-md-content h3 { font-size: 1.25em; font-weight: 600; margin: 0.6em 0 0.3em; line-height: 1.3; }
+.novel-md-content h4 { font-size: 1.1em; font-weight: 600; margin: 0.5em 0 0.25em; line-height: 1.3; }
+.novel-md-content h5, .novel-md-content h6 { font-size: 1em; font-weight: 600; margin: 0.4em 0 0.2em; }
+.novel-md-content p { margin: 0 0 0.8em; }
+.novel-md-content ul, .novel-md-content ol { margin: 0 0 0.8em; padding-left: 1.8em; }
+.novel-md-content li { margin-bottom: 0.25em; }
+.novel-md-content blockquote {
+  margin: 0 0 0.8em;
+  padding: 0.4em 1em;
+  border-left: 3px solid var(--md-quote-border);
+  opacity: 0.9;
 }
-
-/**
- * 判断是否需要压缩
- * 尺寸小于阈值时不压缩，直接返回原始 Blob
- */
-function needsCompression(width: number, height: number): boolean {
-  return width > COMPRESS_CONFIG.maxWidth || height > COMPRESS_CONFIG.maxHeight
+.novel-md-content pre {
+  margin: 0 0 0.8em;
+  padding: 0.8em 1em;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 0.88em;
+  line-height: 1.5;
+  background: var(--md-code-bg);
 }
-
-/**
- * 计算等比缩放后的尺寸
- * 保持宽高比，确保不超过最大宽高限制
- */
-function calculateScaledSize(
-  originalWidth: number,
-  originalHeight: number,
-): { width: number; height: number } {
-  const { maxWidth, maxHeight } = COMPRESS_CONFIG
-  let width = originalWidth
-  let height = originalHeight
-
-  if (width > maxWidth) {
-    const ratio = maxWidth / width
-    width = maxWidth
-    height = Math.floor(height * ratio)
-  }
-
-  if (height > maxHeight) {
-    const ratio = maxHeight / height
-    height = maxHeight
-    width = Math.floor(width * ratio)
-  }
-
-  return { width, height }
+.novel-md-content code {
+  font-size: 0.88em;
+  padding: 0.15em 0.35em;
+  border-radius: 3px;
+  background: var(--md-code-bg);
 }
+.novel-md-content pre code { padding: 0; background: none; }
+.novel-md-content a { color: var(--md-link); text-decoration: underline; }
+.novel-md-content hr { border: none; border-top: 1px solid var(--md-border); margin: 1.2em 0; }
+.novel-md-content table { border-collapse: collapse; margin: 0 0 0.8em; width: 100%; }
+.novel-md-content th, .novel-md-content td { border: 1px solid var(--md-border); padding: 0.4em 0.6em; text-align: left; }
+.novel-md-content th { font-weight: 600; }
+.novel-md-content img { display: none; }
+.novel-md-content strong { font-weight: 700; }
+.novel-md-content em { font-style: italic; }
+`
 
-/**
- * 图片压缩/缩放处理函数
- * JPEG/WebP 等已压缩格式且尺寸未超限时跳过 Canvas 二次编码，直接使用原始 Blob
- * 减少不必要的解码-重编码 CPU 开销
- */
-async function compressImage(uint8Array: Uint8Array): Promise<Blob> {
-  const originalBlob = new Blob([uint8Array])
-  const url = URL.createObjectURL(originalBlob)
-
-  try {
-    const img = new Image()
-    img.src = url
-    await new Promise((resolve, reject) => {
-      img.onload = resolve
-      img.onerror = reject
-    })
-
-    const { naturalWidth, naturalHeight } = img
-
-    if (!needsCompression(naturalWidth, naturalHeight)) {
-      return originalBlob
-    }
-
-    URL.revokeObjectURL(url)
-    const bitmap = await createImageBitmap(img)
-
-    const { width: scaledWidth, height: scaledHeight } = calculateScaledSize(naturalWidth, naturalHeight)
-
-    const canvas = document.createElement('canvas')
-    canvas.width = scaledWidth
-    canvas.height = scaledHeight
-    const ctx = canvas.getContext('2d')
-    if (!ctx) {
-      throw new Error('无法创建 Canvas 上下文')
-    }
-
-    ctx.drawImage(bitmap, 0, 0, scaledWidth, scaledHeight)
-    bitmap.close()
-
-    const blob = await new Promise<Blob | null>((resolve) => {
-      canvas.toBlob((b) => resolve(b), 'image/jpeg', COMPRESS_CONFIG.jpegQuality)
-    })
-
-    if (!blob) {
-      throw new Error('图片压缩失败：Canvas toBlob 返回空值')
-    }
-
-    return blob
-  } finally {
-    URL.revokeObjectURL(url)
-  }
-}
-
-let pdfWorkerInitialized = false
-
-const initPdfWorker = async () => {
-  if (!pdfWorkerInitialized) {
-    const workerModule = await import('pdfjs-dist/build/pdf.worker.min.mjs?url')
-    pdfjsLib.GlobalWorkerOptions.workerSrc = workerModule.default
-    pdfWorkerInitialized = true
-  }
-  return pdfjsLib
-}
-
-type ReadMode = 'single' | 'double' | 'scroll'
-
-interface ArchivePageInfo {
-  page_number: number
-  entry_path: string
-  file_name: string
-}
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 
 function ReaderView() {
-  const [currentPage, setCurrentPage] = useState(1)
-  const [mangaTitle, setMangaTitle] = useState('')
-  const [mangaPath, setMangaPath] = useState('')
-  const [sourceType, setSourceType] = useState('')
-  const [archivePages, setArchivePages] = useState<ArchivePageInfo[]>([])
-  const [folderImages, setFolderImages] = useState<string[]>([])
+  // ---- Book identity ----
+  const [bookId, setBookId] = useState<number | null>(null)
+  const [bookTitle, setBookTitle] = useState('')
+  const [_bookPath, setBookPath] = useState('')
+  const [sourceType, setSourceType] = useState<'pdf' | 'txt' | 'md'>('txt')
+
+  // ---- Loading & error ----
   const [isLoading, setIsLoading] = useState(true)
-  const [currentImageSrc, setCurrentImageSrc] = useState('')
-  const [zoomMode, setZoomMode] = useState(false)
-  const [readMode, setReadMode] = useState<ReadMode>('single')
-  const [doublePageRight, setDoublePageRight] = useState('')
-  const [scrollImages, setScrollImages] = useState<{ path: string; url: string }[]>([])
-  /**
-   * Scroll 模式虚拟滚动实现
-   * 只渲染可见区域 + 缓冲区的页面，减少 DOM 节点数量
-   * 使用估算高度 + padding 保持正确的滚动位置
-   */
-  const [scrollTop, setScrollTop] = useState(0)
-  const [containerHeight, setContainerHeight] = useState(0)
-  const scrollContainerRef = useRef<HTMLDivElement>(null)
-  const estimatedPageHeight = useRef(800) // 估算每页高度（px）
-  const VISIBLE_BUFFER = 3 // 上下各多渲染 3 页作为缓冲区
-  // Scroll 模式按需加载：记录已加载的页码集合，避免重复加载
-  const loadedScrollPagesRef = useRef<Set<number>>(new Set())
-  // 正在加载中的页码集合，避免并发重复请求
-  const loadingScrollPagesRef = useRef<Set<number>>(new Set())
-  // 预加载定时器，用于取消未完成的预加载
-  const preloadTimerRef = useRef<number | null>(null)
-  const [autoPage, setAutoPage] = useState(false)
-  const storeAutoPageInterval = useMangaStore(state => state.autoPageInterval)
-  const autoPageRef = useRef<number | null>(null)
-  const [comicId, setComicId] = useState<number | null>(null)
-  const [errorToast, setErrorToast] = useState<string | null>(null)
-  // 消息通知状态
+  const [error, setError] = useState<string | null>(null)
+
+  // ---- Reading settings ----
+  const [readMode, setReadMode] = useState<ReadMode>('paginated')
+  const [theme, setTheme] = useState<ThemeMode>('dark')
+  const [fontSize, setFontSize] = useState(18)
+  const [lineHeight, setLineHeight] = useState(1.8)
+
+  // ---- Content data ----
+  const [pdfPages, setPdfPages] = useState<databaseService.PdfTextPage[]>([])
+  const [txtText, setTxtText] = useState('')
+  const [txtChapters, setTxtChapters] = useState<databaseService.TxtChapter[]>([])
+  const [mdHtml, setMdHtml] = useState('')
+  const [mdChapters, setMdChapters] = useState<databaseService.MdChapter[]>([])
+
+  // ---- Navigation ----
+  const [currentPage, setCurrentPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(0)
+  const [currentChapter, setCurrentChapter] = useState<number | null>(null)
+
+  // ---- UI state ----
   const [notification, setNotification] = useState<string | null>(null)
   const notificationTimerRef = useRef<number | null>(null)
+  const [showChapterPanel, setShowChapterPanel] = useState(false)
+  const [scrollPercentage, setScrollPercentage] = useState(0)
 
-  const [isDragging, setIsDragging] = useState(false)
-  const dragStartRef = useRef({ x: 0, y: 0 })
-  const [zoomLevelState, setZoomLevelState] = useState(100)
-  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 })
-  // 缩略图面板状态
-  const [showThumbnailPanel, setShowThumbnailPanel] = useState(false)
-  const [thumbnailSize, setThumbnailSize] = useState(80)
-  const [thumbnailPanelWidth, setThumbnailPanelWidth] = useState(200)
+  // ---- Refs ----
+  const contentRef = useRef<HTMLDivElement>(null)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
   const initialLoadRef = useRef(false)
-  const createdBlobUrlsRef = useRef<Set<string>>(new Set())
-  // 用于追踪最新的翻页请求，防止竞态条件导致图片与页码不匹配
-  const pageRequestSequenceRef = useRef(0)
-  // PDF 文档缓存，避免每次翻页都重新加载和解析整个 PDF
-  const pdfDocumentRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null)
-  const pdfFilePathRef = useRef<string>('')
 
-  const MAX_CACHE_SIZE = 20 // 限制缓存页数，避免内存耗尽
+  // ---- Derived: TXT pages ----
+  const charsPerPage = Math.round(CHARS_PER_PAGE_BASE * (18 / fontSize))
+  const txtPages = splitTextIntoPages(txtText, charsPerPage)
 
-  const revokeBlobUrl = useCallback((url: string) => {
-    if (url && createdBlobUrlsRef.current.has(url)) {
-      URL.revokeObjectURL(url)
-      createdBlobUrlsRef.current.delete(url)
-    }
+  // ---- Derived: effective total pages ----
+  const effectiveTotalPages = totalPages
+
+  // =========================================================================
+  // Notification helper
+  // =========================================================================
+
+  const showNotification = useCallback((message: string) => {
+    setNotification(message)
+    if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current)
+    notificationTimerRef.current = window.setTimeout(() => setNotification(null), 2000)
   }, [])
 
-  const revokeAllBlobUrls = useCallback(() => {
-    createdBlobUrlsRef.current.forEach(url => URL.revokeObjectURL(url))
-    createdBlobUrlsRef.current.clear()
-  }, [])
+  // =========================================================================
+  // Content loading
+  // =========================================================================
 
-  const addBlobUrl = useCallback((url: string) => {
-    createdBlobUrlsRef.current.add(url)
-  }, [])
-
-  const imageCacheRef = useRef<LRUCache<number, string> | null>(null)
-  if (!imageCacheRef.current) {
-    imageCacheRef.current = new LRUCache(MAX_CACHE_SIZE, (url: string) => {
-      if (url && createdBlobUrlsRef.current.has(url)) {
-        URL.revokeObjectURL(url)
-        createdBlobUrlsRef.current.delete(url)
-      }
-    })
-  }
-  const imageCache = imageCacheRef.current
-
-  const folderImageCacheRef = useRef<LRUCache<string, string> | null>(null)
-  if (!folderImageCacheRef.current) {
-    folderImageCacheRef.current = new LRUCache(MAX_CACHE_SIZE, (url: string) => {
-      if (url && createdBlobUrlsRef.current.has(url)) {
-        URL.revokeObjectURL(url)
-        createdBlobUrlsRef.current.delete(url)
-      }
-    })
-  }
-  const folderImageCache = folderImageCacheRef.current
-
-  const totalPages = sourceType === 'archive' || sourceType === 'pdf' ? archivePages.length : folderImages.length
-
-  const loadFolderImage = useCallback(async (filePath: string): Promise<string> => {
-    const cachedUrl = folderImageCache.get(filePath)
-    if (cachedUrl) {
-      return cachedUrl
-    }
-    try {
-      const bytes = await invoke<number[]>('read_image_bytes', { filePath })
-      const uint8Array = new Uint8Array(bytes)
-      // 使用压缩工具处理图片，大尺寸图片会自动压缩到 maxWidth/maxHeight 以内
-      const blob = await compressImage(uint8Array)
-      const url = URL.createObjectURL(blob)
-      addBlobUrl(url)
-      folderImageCache.set(filePath, url)
-      return url
-    } catch (error) {
-      console.error('读取图片文件失败:', error)
-      setErrorToast('读取图片文件失败')
-      return ''
-    }
-  }, [addBlobUrl, folderImageCache])
-
-  const loadArchivePage = useCallback(async (pageInfo: ArchivePageInfo) => {
-    const cachedUrl = imageCache.get(pageInfo.page_number)
-    if (cachedUrl) {
-      return cachedUrl
-    }
-    try {
-      const bytes = await invoke<number[]>('get_archive_image_bytes', {
-        path: mangaPath,
-        entryPath: pageInfo.entry_path,
-      })
-      const uint8Array = new Uint8Array(bytes)
-      // 使用压缩工具处理图片，大尺寸图片会自动压缩到 maxWidth/maxHeight 以内
-      const blob = await compressImage(uint8Array)
-      const url = URL.createObjectURL(blob)
-      addBlobUrl(url)
-      imageCache.set(pageInfo.page_number, url)
-      return url
-    } catch (error) {
-      console.error('加载压缩包页面失败:', error)
-      setErrorToast('加载压缩包页面失败')
-      return ''
-    }
-  }, [mangaPath, addBlobUrl, imageCache])
-
-  /**
-   * 预加载相邻页面图片，提升快速翻页体验
-   * 空闲时预加载前后各 2 页，避免内存耗尽
-   */
-  const preloadAdjacentPages = useCallback((currentPageNum: number) => {
-    if (readMode === 'scroll') return
-    const PRELOAD_RANGE = 2 // 限制预加载范围，避免内存耗尽
-    const tasks: Promise<void>[] = []
-    
-    for (let i = 1; i <= PRELOAD_RANGE; i++) {
-      const prevPage = currentPageNum - i
-      if (prevPage >= 1 && !imageCache.has(prevPage)) {
-        const pageInfo = archivePages[prevPage - 1]
-        if (pageInfo) {
-          tasks.push(loadArchivePage(pageInfo).then(() => {}))
-        }
-      }
-      const nextPage = currentPageNum + i
-      if (nextPage <= totalPages && !imageCache.has(nextPage)) {
-        const pageInfo = archivePages[nextPage - 1]
-        if (pageInfo) {
-          tasks.push(loadArchivePage(pageInfo).then(() => {}))
-        }
-      }
-    }
-    
-    // 使用 requestIdleCallback 在空闲时执行预加载
-    if ('requestIdleCallback' in window) {
-      const handle = requestIdleCallback(() => {
-        Promise.allSettled(tasks)
-      }, { timeout: 1000 })
-      if (preloadTimerRef.current) {
-        cancelIdleCallback(handle)
-      }
-      preloadTimerRef.current = handle as unknown as number
-    } else {
-      const timer = window.setTimeout(() => {
-        Promise.allSettled(tasks)
-      }, 100)
-      preloadTimerRef.current = timer
-    }
-  }, [archivePages, totalPages, imageCache, loadArchivePage, readMode])
-
-  const loadPdfPage = useCallback(async (pageNumber: number): Promise<string> => {
-    try {
-      const cachedUrl = imageCache.get(pageNumber)
-      if (cachedUrl) {
-        return cachedUrl
-      }
-      const pdfjsLibInstance = await initPdfWorker()
-
-      // 如果文件路径变化或文档未加载，则重新加载 PDF
-      if (!pdfDocumentRef.current || pdfFilePathRef.current !== mangaPath) {
-        // 清理旧文档
-        if (pdfDocumentRef.current) {
-          try {
-            await pdfDocumentRef.current.destroy()
-          } catch {}
-          pdfDocumentRef.current = null
-        }
-
-        const bytes = await invoke<number[]>('read_image_bytes', { filePath: mangaPath })
-        const uint8Array = new Uint8Array(bytes)
-        const loadingTask = pdfjsLibInstance.getDocument({ data: uint8Array })
-        pdfDocumentRef.current = await loadingTask.promise
-        pdfFilePathRef.current = mangaPath
-      }
-
-      const pdf = pdfDocumentRef.current
-      const page = await pdf.getPage(pageNumber)
-      const viewport = page.getViewport({ scale: 1.5 })
-      const canvas = document.createElement('canvas')
-      canvas.width = viewport.width
-      canvas.height = viewport.height
-      const context = canvas.getContext('2d')
-      if (!context) throw new Error('无法创建Canvas上下文')
-      const renderTask = page.render({ canvasContext: context, viewport, canvas })
-      await renderTask.promise
-      const blob = await new Promise<Blob | null>((resolve) => {
-        canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.9)
-      })
-      if (!blob) throw new Error('PDF页面转Blob失败')
-      // 使用 createObjectURL 替代 FileReader.readAsDataURL，避免 base64 33% 体积增加
-      const url = URL.createObjectURL(blob)
-      addBlobUrl(url)
-      imageCache.set(pageNumber, url)
-      // 清理单页渲染资源，但不销毁文档
-      try { page.cleanup() } catch {}
-      return url
-    } catch (error) {
-      console.error('加载PDF页面失败:', error)
-      setErrorToast('加载PDF页面失败')
-      return ''
-    }
-  }, [mangaPath, addBlobUrl, imageCache])
-
-  const getPageUrl = useCallback(async (pageIndex: number): Promise<string> => {
-    if (sourceType === 'pdf') return await loadPdfPage(pageIndex)
-    if (sourceType === 'archive' && archivePages.length > 0) return await loadArchivePage(archivePages[pageIndex - 1])
-    const imgPath = folderImages[pageIndex - 1]
-    if (imgPath) return await loadFolderImage(imgPath)
-    return ''
-  }, [sourceType, archivePages, folderImages, loadPdfPage, loadArchivePage, loadFolderImage])
-
-  const loadImages = useCallback(async (path: string, type: string) => {
+  const loadContent = useCallback(async (path: string, type: 'pdf' | 'txt' | 'md') => {
     setIsLoading(true)
+    setError(null)
     try {
-      if (type === 'archive') {
-        const pages = await invoke<ArchivePageInfo[]>('get_archive_images', { path })
-        setArchivePages(pages)
-        setFolderImages([])
-        if (pages.length > 0) {
-          const bytes = await invoke<number[]>('get_archive_image_bytes', {
-            path,
-            entryPath: pages[0].entry_path,
-          })
-          const uint8Array = new Uint8Array(bytes)
-          const blob = await compressImage(uint8Array)
-          const url = URL.createObjectURL(blob)
-          addBlobUrl(url)
-          if (url) setCurrentImageSrc(url)
-        }
-      } else if (type === 'pdf') {
-        const pages = await invoke<ArchivePageInfo[]>('get_archive_images', { path })
-        setArchivePages(pages)
-        setFolderImages([])
-        if (pages.length > 0) {
-          const url = await loadPdfPage(pages[0].page_number)
-          if (url) setCurrentImageSrc(url)
-        }
-      } else {
-        const images = await invoke<string[]>('get_folder_images', { folder: path })
-        setFolderImages(images)
-        setArchivePages([])
-        if (images.length > 0) {
-          const url = await loadFolderImage(images[0])
-          if (url) setCurrentImageSrc(url)
-        }
+      if (type === 'pdf') {
+        const result = await databaseService.extractPdfText(path)
+        setPdfPages(result.pages)
+        setTotalPages(result.total_pages || result.pages.length)
+      } else if (type === 'txt') {
+        const result = await databaseService.parseTxtFile(path)
+        setTxtText(result.text)
+        setTxtChapters(result.chapters)
+      } else if (type === 'md') {
+        const result = await databaseService.parseMdFile(path)
+        setMdHtml(result.html_content)
+        setMdChapters(result.chapters)
       }
-    } catch (error) {
-      console.error('加载图片失败:', error)
-      setErrorToast('加载图片失败')
+      setCurrentPage(1)
+      setCurrentChapter(null)
+    } catch (err) {
+      console.error('Failed to load content:', err)
+      setError('Failed to load file content')
     } finally {
       setIsLoading(false)
     }
-  }, [loadPdfPage, loadFolderImage, addBlobUrl])
-
-  const restoreReadingProgress = useCallback(async (path: string) => {
-    try {
-      // 使用按路径查询，避免加载全部漫画元数据
-      const comic = await databaseService.getComicByPath(path)
-      if (comic && comic.id) {
-        setComicId(comic.id)
-        const progress = await databaseService.getReadingProgress(comic.id)
-        if (progress && progress.current_page > 1) return progress.current_page
-      }
-    } catch (error) {
-      console.error('恢复阅读进度失败:', error)
-    }
-    return 1
   }, [])
+
+  // =========================================================================
+  // Initialise from window hash
+  // =========================================================================
 
   useEffect(() => {
     const hash = window.location.hash
-    let id = ''
     let title = ''
     let path = ''
-    let type = 'folder'
+    let type: 'pdf' | 'txt' | 'md' = 'txt'
+
     if (hash.startsWith('#reader#')) {
       const parts = hash.replace('#reader#', '').split('#')
-      id = parts[0] || ''
+      // parts[0] = id
       title = parts[1] ? decodeURIComponent(parts[1]) : ''
       path = parts[2] ? decodeURIComponent(parts[2]) : ''
-      type = parts[3] || 'folder'
+      type = (parts[3] || 'txt') as 'pdf' | 'txt' | 'md'
     }
-    if (title) setMangaTitle(title)
-    else setMangaTitle('未知漫画')
+
+    setBookTitle(title || 'Unknown Book')
+    setBookPath(path)
+    setSourceType(type)
+
     if (path && !initialLoadRef.current) {
       initialLoadRef.current = true
-      setMangaPath(path)
-      setSourceType(type)
-      loadImages(path, type)
-      // 打开时自动获取comicId，使保存进度功能可用
-      databaseService.getComicByPath(path).then(comic => {
-        if (comic && comic.id) {
-          setComicId(comic.id)
-        }
-      }).catch(err => console.error('获取漫画ID失败:', err))
-      // 注意：打开时不自动恢复阅读页码，用户需手动点击"恢复进度"按钮
-    }
-  }, [])
+      loadContent(path, type)
 
-  /**
-   * 手动保存阅读进度
-   * 用户点击"保存进度"按钮时调用
-   */
-  /**
-   * 显示消息通知
-   */
-  const showNotification = useCallback((message: string) => {
-    setNotification(message)
-    if (notificationTimerRef.current) {
-      clearTimeout(notificationTimerRef.current)
+      databaseService.getBookByPath(path).then(book => {
+        if (book && book.id) setBookId(book.id)
+      }).catch(err => console.error('Failed to get book ID:', err))
     }
-    notificationTimerRef.current = window.setTimeout(() => {
-      setNotification(null)
-    }, 2000)
-  }, [])
+  }, [loadContent])
 
-  const handleSaveProgress = useCallback(async () => {
-    if (!comicId || totalPages === 0) {
-      showNotification('无法保存进度')
-      return
-    }
-    try {
-      await databaseService.saveReadingProgress(comicId, currentPage, totalPages)
-      const updateStore = useMangaStore.getState().updateReadingProgress
-      if (updateStore) {
-        await updateStore(String(comicId), currentPage, totalPages, mangaPath)
-      }
-      showNotification(`进度已保存: 第 ${currentPage} 页`)
-    } catch (error) {
-      showNotification('保存进度失败')
-      console.error('保存阅读进度失败:', error)
-    }
-  }, [comicId, currentPage, totalPages, mangaPath, showNotification])
-
-  /**
-   * Scroll 模式按需加载：加载指定范围的页码
-   * 不一次性加载全部图片，而是根据可视区域动态加载
-   */
-  const loadScrollPageRange = useCallback(async (startPage: number, endPage: number) => {
-    const newImages: { path: string; url: string }[] = []
-    for (let page = startPage; page <= endPage; page++) {
-      // 跳过已加载或正在加载的页
-      if (loadedScrollPagesRef.current.has(page) || loadingScrollPagesRef.current.has(page)) continue
-      
-      loadingScrollPagesRef.current.add(page)
-      try {
-        const url = await getPageUrl(page)
-        if (url) {
-          newImages.push({ path: String(page), url })
-          loadedScrollPagesRef.current.add(page)
-        }
-      } finally {
-        loadingScrollPagesRef.current.delete(page)
-      }
-    }
-    if (newImages.length > 0) {
-      setScrollImages(prev => {
-        // 合并新图片到已有列表，按页码排序
-        const merged = [...prev, ...newImages].sort((a, b) => Number(a.path) - Number(b.path))
-        return merged
-      })
-    }
-  }, [getPageUrl])
-
-  /**
-   * Scroll 模式初始加载：只加载前 5 张 + 当前页附近
-   */
-  const initScrollImages = useCallback(async () => {
-    loadedScrollPagesRef.current.clear()
-    loadingScrollPagesRef.current.clear()
-    setScrollImages([])
-    
-    const total = totalPages
-    if (total === 0) return
-    
-    // 从第 1 页开始加载前 5 张
-    const preloadCount = Math.min(5, total)
-    await loadScrollPageRange(1, preloadCount)
-  }, [totalPages, loadScrollPageRange])
-
-  /**
-   * Scroll 模式虚拟滚动 + 按需加载
-   * 计算可见区域 + 缓冲区的页面范围，动态加载和渲染
-   */
-  const handleScrollUpdate = useCallback(() => {
-    const container = scrollContainerRef.current
-    if (!container || totalPages === 0) return
-
-    const scrollTop = container.scrollTop
-    const containerHeight = container.clientHeight
-    setScrollTop(scrollTop)
-    setContainerHeight(containerHeight)
-    
-    // 计算可见的起始和结束页码
-    const startPage = Math.max(1, Math.floor(scrollTop / estimatedPageHeight.current) - VISIBLE_BUFFER)
-    const visiblePages = Math.ceil(containerHeight / estimatedPageHeight.current)
-    const endPage = Math.min(totalPages, startPage + visiblePages + VISIBLE_BUFFER * 2)
-    
-    loadScrollPageRange(startPage, endPage)
-  }, [totalPages, loadScrollPageRange])
+  // =========================================================================
+  // Recalculate total pages when content or settings change
+  // =========================================================================
 
   useEffect(() => {
+    if (sourceType === 'pdf') {
+      setTotalPages(pdfPages.length)
+    } else if (sourceType === 'txt') {
+      setTotalPages(txtPages.length)
+    }
+    // MD total pages are calculated after render (see below)
+  }, [sourceType, pdfPages.length, txtPages.length])
+
+  // =========================================================================
+  // MD paginated mode: measure content height and compute total pages
+  // =========================================================================
+
+  useEffect(() => {
+    if (sourceType !== 'md') return
+    if (readMode !== 'paginated') return
+    if (!contentRef.current) return
+
+    const measure = () => {
+      const container = contentRef.current
+      if (!container) return
+      const contentHeight = container.scrollHeight
+      const viewportHeight = container.clientHeight
+      if (viewportHeight > 0 && contentHeight > 0) {
+        const pages = Math.max(1, Math.ceil(contentHeight / viewportHeight))
+        setTotalPages(pages)
+      }
+    }
+
+    // Delay to allow rendering to complete
+    const timer = setTimeout(measure, 150)
+
+    // Also observe resize
+    const observer = new ResizeObserver(() => {
+      measure()
+    })
+    observer.observe(contentRef.current)
+
     return () => {
-      revokeAllBlobUrls()
-      // 组件卸载时清理 PDF 文档
-      if (pdfDocumentRef.current) {
-        try { pdfDocumentRef.current.destroy() } catch {}
-        pdfDocumentRef.current = null
-      }
+      clearTimeout(timer)
+      observer.disconnect()
     }
-  }, [revokeAllBlobUrls])
+  }, [sourceType, readMode, mdHtml, fontSize, lineHeight])
+
+  // =========================================================================
+  // Clamp currentPage when totalPages changes
+  // =========================================================================
 
   useEffect(() => {
-    if (readMode === 'scroll' && (archivePages.length > 0 || folderImages.length > 0)) {
-      // Scroll 模式：按需加载，不一次性加载全部
-      initScrollImages()
-    } else if (readMode !== 'scroll' && scrollImages.length > 0) {
-      // 退出 scroll 模式时清理已加载的图片 URL
-      scrollImages.forEach(img => revokeBlobUrl(img.url))
-      loadedScrollPagesRef.current.clear()
-      loadingScrollPagesRef.current.clear()
-      setScrollImages([])
+    if (totalPages > 0 && currentPage > totalPages) {
+      setCurrentPage(totalPages)
     }
-    
-    // 模式切换时清空 LRU 缓存，避免不同模式间的缓存污染
-    if (readMode === 'scroll') {
-      // Scroll 模式使用独立缓存策略，清空单页/双页模式的缓存
-      imageCache.clear()
-      folderImageCache.clear()
-    }
-  }, [readMode, archivePages.length, folderImages.length, initScrollImages, scrollImages, revokeBlobUrl, imageCache, folderImageCache])
+  }, [totalPages, currentPage])
+
+  // =========================================================================
+  // MD paginated: scroll content container when page changes
+  // =========================================================================
 
   useEffect(() => {
-    if (readMode === 'scroll' && scrollImages.length > 0 && currentPage > 1) {
-      const imageIndex = currentPage - 1
-      if (imageIndex >= 0 && imageIndex < scrollImages.length) {
-        const container = scrollContainerRef.current
-        if (container) {
-          const targetImage = container.querySelector(`img[data-page-index="${imageIndex}"]`)
-          if (targetImage) {
-            targetImage.scrollIntoView({ behavior: 'instant', block: 'start' })
-          }
-        }
-      }
-    }
-  }, [readMode, scrollImages.length, currentPage])
-
-  // Scroll 模式下监听滚动事件，触发虚拟滚动更新
-  useEffect(() => {
-    if (readMode !== 'scroll') return
-    
-    const container = scrollContainerRef.current
+    if (sourceType !== 'md' || readMode !== 'paginated') return
+    const container = contentRef.current
     if (!container) return
-    
-    container.addEventListener('scroll', handleScrollUpdate, { passive: true })
-    // 初始化时立即执行一次
-    handleScrollUpdate()
-    return () => container.removeEventListener('scroll', handleScrollUpdate)
-  }, [readMode, handleScrollUpdate])
-
-  const handleClose = async () => {
-    try {
-      if (comicId && totalPages > 0) {
-        try {
-          await databaseService.saveReadingProgress(comicId, currentPage, totalPages)
-          const updateStore = useMangaStore.getState().updateReadingProgress
-          if (updateStore) {
-            await updateStore(String(comicId), currentPage, totalPages, mangaPath)
-          }
-        } catch (error) {
-          console.error('自动保存进度失败:', error)
-        }
-      }
-      revokeAllBlobUrls()
-      const currentWindow = getCurrentWindow()
-      await currentWindow.close()
-    } catch (error) {
-      console.error('关闭窗口失败:', error)
+    const viewportHeight = container.clientHeight
+    if (viewportHeight > 0) {
+      container.scrollTop = (currentPage - 1) * viewportHeight
     }
-  }
+  }, [sourceType, readMode, currentPage])
 
-  const switchToPage = useCallback(async (page: number) => {
-    const sequence = ++pageRequestSequenceRef.current
-    const url = await getPageUrl(page)
-    if (sequence === pageRequestSequenceRef.current && url) {
-      setCurrentImageSrc(url)
-    }
-  }, [getPageUrl])
+  // =========================================================================
+  // Navigation
+  // =========================================================================
 
-  const loadDoublePage = useCallback(async (page: number) => {
-    const sequence = ++pageRequestSequenceRef.current
-    const leftUrl = await getPageUrl(page)
-    if (sequence !== pageRequestSequenceRef.current) return
-    setCurrentImageSrc(leftUrl)
-    if (page + 1 <= totalPages) {
-      const rightUrl = await getPageUrl(page + 1)
-      if (sequence === pageRequestSequenceRef.current) {
-        setDoublePageRight(rightUrl)
-      }
-    } else {
-      setDoublePageRight('')
-    }
-  }, [getPageUrl, totalPages])
+  const goToPage = useCallback((page: number) => {
+    const target = Math.max(1, Math.min(effectiveTotalPages, page))
+    setCurrentPage(target)
+  }, [effectiveTotalPages])
 
-  const handleRestoreProgress = useCallback(async () => {
-    const savedPage = await restoreReadingProgress(mangaPath)
-    if (savedPage > 1) {
-      setCurrentPage(savedPage)
-      showNotification(`已恢复到第 ${savedPage} 页`)
-    } else {
-      showNotification('没有保存的进度')
-    }
-  }, [mangaPath, restoreReadingProgress, showNotification])
+  const goPrev = useCallback(() => {
+    setCurrentPage(prev => Math.max(1, prev - 1))
+  }, [])
 
-  const handleDoublePrev = useCallback(() => {
-    if (autoPage) setAutoPage(false)
-    const step = readMode === 'double' ? 2 : 1
-    const newPage = Math.max(1, currentPage - step)
-    setCurrentPage(newPage)
-  }, [currentPage, readMode, autoPage])
+  const goNext = useCallback(() => {
+    setCurrentPage(prev => Math.min(effectiveTotalPages, prev + 1))
+  }, [effectiveTotalPages])
 
-  const handleDoubleNext = useCallback(() => {
-    if (autoPage) setAutoPage(false)
-    const step = readMode === 'double' ? 2 : 1
-    const newPage = Math.min(totalPages, currentPage + step)
-    setCurrentPage(newPage)
-  }, [currentPage, totalPages, readMode, autoPage])
-
-  useEffect(() => {
-    if (readMode === 'scroll') return
-    if (autoPage && currentPage >= totalPages) setAutoPage(false)
-  }, [currentPage, autoPage, totalPages, readMode])
-
-  // 统一页面加载入口：currentPage 或 readMode 变化时自动加载对应页面
-  // 使用请求序号防止快速翻页时的竞态条件
-  useEffect(() => {
-    if (readMode === 'scroll') return
-    if (!(archivePages.length > 0 || folderImages.length > 0)) return
-    const sequence = ++pageRequestSequenceRef.current
-    const loadCurrentPage = async () => {
-      if (readMode === 'double') {
-        const leftUrl = await getPageUrl(currentPage)
-        if (sequence !== pageRequestSequenceRef.current) return
-        setCurrentImageSrc(leftUrl)
-        if (currentPage + 1 <= totalPages) {
-          const rightUrl = await getPageUrl(currentPage + 1)
-          if (sequence === pageRequestSequenceRef.current) {
-            setDoublePageRight(rightUrl)
-          }
-        } else {
-          setDoublePageRight('')
-        }
-      } else {
-        const url = await getPageUrl(currentPage)
-        if (sequence === pageRequestSequenceRef.current && url) {
-          setCurrentImageSrc(url)
-        }
-      }
-    }
-    loadCurrentPage()
-  }, [currentPage, readMode, archivePages.length, folderImages.length, getPageUrl, totalPages])
-
-  // 页面加载完成后触发预加载
-  useEffect(() => {
-    if (readMode === 'scroll') return
-    if (sourceType === 'archive' && archivePages.length > 0 && currentPage > 0) {
-      preloadAdjacentPages(currentPage)
-    }
-  }, [currentPage, readMode, sourceType, archivePages.length, preloadAdjacentPages])
+  // =========================================================================
+  // Keyboard navigation
+  // =========================================================================
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (readMode === 'scroll') return
-      if (e.key === 'ArrowLeft' || e.key === 'Left') { e.preventDefault(); handleDoublePrev() }
-      else if (e.key === 'ArrowRight' || e.key === 'Right') { e.preventDefault(); handleDoubleNext() }
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'PageUp') {
+        e.preventDefault()
+        goPrev()
+      } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'PageDown') {
+        e.preventDefault()
+        goNext()
+      } else if (e.key === 'Home') {
+        e.preventDefault()
+        goToPage(1)
+      } else if (e.key === 'End') {
+        e.preventDefault()
+        goToPage(effectiveTotalPages)
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handleDoublePrev, handleDoubleNext, readMode])
+  }, [goPrev, goNext, goToPage, effectiveTotalPages])
+
+  // =========================================================================
+  // Wheel navigation (paginated mode only)
+  // =========================================================================
 
   useEffect(() => {
-    if (readMode === 'scroll') return
-    if (!autoPage) return
-    autoPageRef.current = window.setInterval(() => {
-      setCurrentPage(prev => {
-        const step = readMode === 'double' ? 2 : 1
-        if (prev >= totalPages) return prev
-        return Math.min(totalPages, prev + step)
-      })
-    }, storeAutoPageInterval)
-    return () => { if (autoPageRef.current) { clearInterval(autoPageRef.current); autoPageRef.current = null } }
-  }, [autoPage, storeAutoPageInterval, readMode, totalPages])
-
-  useEffect(() => {
-    if (readMode === 'scroll') return
+    if (readMode !== 'paginated') return
     let wheelTimer: number | null = null
-    const WHEEL_THROTTLE_MS = 100
+    const WHEEL_THROTTLE_MS = 300
+
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault()
       if (wheelTimer) return
       wheelTimer = window.setTimeout(() => { wheelTimer = null }, WHEEL_THROTTLE_MS)
-      if (zoomMode) {
-        setZoomLevelState(prev => {
-          const delta = e.deltaY > 0 ? -10 : 10
-          return Math.min(320, Math.max(120, prev + delta))
-        })
-      } else {
-        if (e.deltaY > 0) handleDoubleNext()
-        else if (e.deltaY < 0) handleDoublePrev()
-      }
+      if (e.deltaY > 0) goNext()
+      else if (e.deltaY < 0) goPrev()
     }
+
     window.addEventListener('wheel', handleWheel, { passive: false })
-    return () => { window.removeEventListener('wheel', handleWheel); if (wheelTimer) clearTimeout(wheelTimer) }
-  }, [handleDoublePrev, handleDoubleNext, zoomMode, readMode])
-
-  const setReadModeWithCleanup = (mode: ReadMode) => {
-    pageRequestSequenceRef.current++
-    setReadMode(mode)
-    setZoomMode(false)
-    setDoublePageRight('')
-  }
-
-  const scrollToTop = () => {
-    if (scrollContainerRef.current) scrollContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' })
-  }
-
-  const getZoomTransform = () => {
-    if (!zoomMode) return undefined
-    const scale = zoomLevelState / 100
-    return `scale(${scale}) translate(${panOffset.x}px, ${panOffset.y}px)`
-  }
-
-  const handleImageMouseDown = (e: React.MouseEvent) => {
-    if (!zoomMode || zoomLevelState <= 100) return
-    e.preventDefault()
-    setIsDragging(true)
-    dragStartRef.current = { x: e.clientX - panOffset.x, y: e.clientY - panOffset.y }
-  }
-
-  const handleImageMouseMove = useCallback((e: MouseEvent) => {
-    if (!isDragging) return
-    setPanOffset({ x: e.clientX - dragStartRef.current.x, y: e.clientY - dragStartRef.current.y })
-  }, [isDragging])
-
-  const handleImageMouseUp = useCallback(() => { setIsDragging(false) }, [])
-
-  useEffect(() => {
-    if (isDragging) {
-      window.addEventListener('mousemove', handleImageMouseMove)
-      window.addEventListener('mouseup', handleImageMouseUp)
-      return () => { window.removeEventListener('mousemove', handleImageMouseMove); window.removeEventListener('mouseup', handleImageMouseUp) }
+    return () => {
+      window.removeEventListener('wheel', handleWheel)
+      if (wheelTimer) clearTimeout(wheelTimer)
     }
-  }, [isDragging, handleImageMouseMove, handleImageMouseUp])
+  }, [readMode, goNext, goPrev])
 
-  const resetPan = useCallback(() => { setPanOffset({ x: 0, y: 0 }) }, [])
+  // =========================================================================
+  // Scroll mode: track scroll percentage
+  // =========================================================================
 
+  const handleScroll = useCallback(() => {
+    const container = scrollContainerRef.current
+    if (!container) return
+    const { scrollTop, scrollHeight, clientHeight } = container
+    const maxScroll = scrollHeight - clientHeight
+    const percentage = maxScroll > 0 ? Math.round((scrollTop / maxScroll) * 100) : 0
+    setScrollPercentage(percentage)
+  }, [])
 
+  // =========================================================================
+  // Progress: save / restore
+  // =========================================================================
 
-  const imageStyle = {
-    transform: getZoomTransform(),
-    cursor: zoomMode && zoomLevelState > 100 ? (isDragging ? 'grabbing' : 'grab') : undefined,
-  }
+  const handleSaveProgress = useCallback(async () => {
+    if (!bookId) {
+      showNotification('Cannot save: book ID not found')
+      return
+    }
+    try {
+      await databaseService.saveReadingProgress(
+        bookId,
+        currentPage,
+        effectiveTotalPages,
+        currentChapter ?? undefined,
+      )
+      showNotification(`Progress saved: Page ${currentPage}`)
+    } catch (err) {
+      showNotification('Failed to save progress')
+      console.error('Save progress error:', err)
+    }
+  }, [bookId, currentPage, effectiveTotalPages, currentChapter, showNotification])
 
-  const renderSinglePage = () => (
-    <div className="flex-1 flex items-center justify-center p-4 overflow-auto relative group">
-      {isLoading ? (
-        <p className="text-text-secondary">加载中...</p>
-      ) : currentImageSrc ? (
-        <img src={currentImageSrc} alt={`第 ${currentPage} 页`}
-          className="max-w-full max-h-full object-contain transition-transform duration-150 select-none"
-          style={imageStyle} onMouseDown={handleImageMouseDown} />
-      ) : (
-        <div className="text-center">
-          <span className="text-6xl mb-4 block">📄</span>
-          <p className="text-text-primary text-lg">暂无图片</p>
-        </div>
-      )}
-      {/* 左侧翻页按钮 - 始终垂直居中，鼠标靠近显示 */}
-      <button
-        onClick={handleDoublePrev}
-        disabled={currentPage === 1}
-        className="fixed left-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
-        title="上一页"
-      >
-        <RxChevronLeft className="w-6 h-6" />
-      </button>
-      {/* 右侧翻页按钮 - 始终垂直居中，鼠标靠近显示 */}
-      <button
-        onClick={handleDoubleNext}
-        disabled={currentPage >= totalPages || totalPages === 0}
-        className="fixed right-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
-        title="下一页"
-      >
-        <RxChevronRight className="w-6 h-6" />
-      </button>
-    </div>
-  )
+  const handleRestoreProgress = useCallback(async () => {
+    if (!bookId) {
+      showNotification('Cannot restore: book ID not found')
+      return
+    }
+    try {
+      const progress = await databaseService.getReadingProgress(bookId)
+      if (progress && progress.current_page > 1) {
+        goToPage(progress.current_page)
+        showNotification(`Restored to page ${progress.current_page}`)
+      } else {
+        showNotification('No saved progress found')
+      }
+    } catch (err) {
+      showNotification('Failed to restore progress')
+      console.error('Restore progress error:', err)
+    }
+  }, [bookId, goToPage, showNotification])
 
-  const renderDoublePage = () => (
-    <div className="flex-1 flex items-center justify-center p-4 overflow-auto gap-2 relative group">
-      {isLoading ? (
-        <p className="text-text-secondary">加载中...</p>
-      ) : (
-        <>
-          {currentImageSrc && (
-            <img src={currentImageSrc} alt={`第 ${currentPage} 页`}
-              className="max-w-full max-h-full object-contain transition-transform duration-150 select-none"
-              style={imageStyle} onMouseDown={handleImageMouseDown} />
-          )}
-          {doublePageRight && (
-            <img src={doublePageRight} alt={`第 ${currentPage + 1} 页`}
-              className="max-w-full max-h-full object-contain transition-transform duration-150 select-none"
-              style={imageStyle} onMouseDown={handleImageMouseDown} />
-          )}
-          {!currentImageSrc && !doublePageRight && (
-            <div className="text-center">
-              <span className="text-6xl mb-4 block">📄</span>
-              <p className="text-text-primary text-lg">暂无图片</p>
-            </div>
-          )}
-        </>
-      )}
-      {/* 左侧翻页按钮 - 始终垂直居中，鼠标靠近显示 */}
-      <button
-        onClick={handleDoublePrev}
-        disabled={currentPage === 1}
-        className="fixed left-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
-        title="上一页"
-      >
-        <RxChevronLeft className="w-6 h-6" />
-      </button>
-      {/* 右侧翻页按钮 - 始终垂直居中，鼠标靠近显示 */}
-      <button
-        onClick={handleDoubleNext}
-        disabled={currentPage >= totalPages || totalPages === 0}
-        className="fixed right-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
-        title="下一页"
-      >
-        <RxChevronRight className="w-6 h-6" />
-      </button>
-    </div>
-  )
+  // =========================================================================
+  // Chapter navigation
+  // =========================================================================
 
-  /**
-   * 缩略图图片组件
-   */
-  const ThumbnailImage = ({ page, size }: { page: number; size: number }) => {
-    const [thumbUrl, setThumbUrl] = useState<string | null>(null)
-    const [loading, setLoading] = useState(true)
+  const goToChapter = useCallback((chapterNumber: number) => {
+    setCurrentChapter(chapterNumber)
 
-    useEffect(() => {
-      let cancelled = false
-      const loadThumb = async () => {
-        try {
-          const url = await getPageUrl(page)
-          if (!cancelled && url) {
-            setThumbUrl(url)
+    if (sourceType === 'txt') {
+      const chapter = txtChapters.find(c => c.chapter_number === chapterNumber)
+      if (chapter) {
+        // Find which TXT page contains the chapter start offset
+        let offset = 0
+        for (let i = 0; i < txtPages.length; i++) {
+          if (offset + txtPages[i].length > chapter.start_offset) {
+            goToPage(i + 1)
+            break
           }
-        } catch (e) {
-          // 忽略缩略图加载错误
-        } finally {
-          if (!cancelled) setLoading(false)
+          offset += txtPages[i].length
         }
       }
-      loadThumb()
-      return () => { cancelled = true }
-    }, [page])
+    } else if (sourceType === 'md') {
+      // Find the heading element in the DOM matching the chapter title
+      const chapter = mdChapters.find(c => c.chapter_number === chapterNumber)
+      if (!chapter) return
 
-    if (loading) {
-      return <div className="w-full h-full bg-bg-hover animate-pulse" />
+      const headings = (readMode === 'scroll' ? scrollContainerRef.current : contentRef.current)
+        ?.querySelectorAll('h1, h2, h3, h4, h5, h6')
+      if (!headings) return
+
+      const targetElement = Array.from(headings).find(
+        el => el.textContent?.trim() === chapter.title,
+      )
+      if (!targetElement) return
+
+      if (readMode === 'scroll') {
+        targetElement.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      } else {
+        // Paginated: calculate which page the heading is on
+        const container = contentRef.current
+        if (container) {
+          const containerRect = container.getBoundingClientRect()
+          const elementRect = targetElement.getBoundingClientRect()
+          const relativeTop = elementRect.top - containerRect.top + container.scrollTop
+          const viewportHeight = container.clientHeight
+          const targetPage = Math.floor(relativeTop / viewportHeight) + 1
+          goToPage(targetPage)
+        }
+      }
     }
 
-    if (!thumbUrl) {
-      return <div className="w-full h-full bg-bg-hover flex items-center justify-center text-text-muted text-xs">{page}</div>
+    setShowChapterPanel(false)
+  }, [sourceType, txtChapters, txtPages, mdChapters, readMode, goToPage])
+
+  // =========================================================================
+  // Close window (auto-save progress)
+  // =========================================================================
+
+  const handleClose = useCallback(async () => {
+    try {
+      if (bookId && effectiveTotalPages > 0) {
+        await databaseService.saveReadingProgress(
+          bookId,
+          currentPage,
+          effectiveTotalPages,
+          currentChapter ?? undefined,
+        )
+      }
+      const currentWindow = getCurrentWindow()
+      await currentWindow.close()
+    } catch (err) {
+      console.error('Close window error:', err)
+    }
+  }, [bookId, currentPage, effectiveTotalPages, currentChapter])
+
+  // =========================================================================
+  // Cleanup on unmount
+  // =========================================================================
+
+  useEffect(() => {
+    return () => {
+      if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current)
+    }
+  }, [])
+
+  // =========================================================================
+  // Derived content for current page
+  // =========================================================================
+
+  const currentPdfPageText = sourceType === 'pdf' && pdfPages.length > 0
+    ? (pdfPages.find(p => p.page_number === currentPage)?.text
+      || pdfPages[currentPage - 1]?.text
+      || '')
+    : ''
+
+  const currentTxtPageText = sourceType === 'txt' && txtPages.length > 0
+    ? txtPages[Math.min(currentPage - 1, txtPages.length - 1)] || ''
+    : ''
+
+  const chapters = sourceType === 'txt'
+    ? txtChapters
+    : sourceType === 'md'
+      ? mdChapters
+      : []
+
+  const themeColors = THEMES[theme]
+
+  // =========================================================================
+  // Render: content area
+  // =========================================================================
+
+  const renderContent = () => {
+    const contentStyle: React.CSSProperties = {
+      fontSize: `${fontSize}px`,
+      lineHeight: lineHeight,
+      color: themeColors.text,
     }
 
-    return (
-      <img
-        src={thumbUrl}
-        alt={`第 ${page} 页`}
-        className="w-full h-full object-cover"
-        loading="lazy"
-      />
-    )
-  }
-
-  const renderScrollMode = () => {
-    if (totalPages === 0) {
+    if (isLoading) {
       return (
-        <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 relative">
-          <div className="flex items-center justify-center h-full">
-            <div className="text-center">
-              <span className="text-6xl mb-4 block">📄</span>
-              <p className="text-text-primary text-lg">暂无图片</p>
-            </div>
-          </div>
+        <div
+          className="flex-1 flex items-center justify-center"
+          style={{ backgroundColor: themeColors.bg }}
+        >
+          <p style={{ color: themeColors.secondary }}>Loading...</p>
         </div>
       )
     }
 
-    // 虚拟滚动计算
-    const startPage = Math.max(1, Math.floor(scrollTop / estimatedPageHeight.current) - VISIBLE_BUFFER)
-    const visiblePages = containerHeight > 0 ? Math.ceil(containerHeight / estimatedPageHeight.current) : 3
-    const endPage = Math.min(totalPages, startPage + visiblePages + VISIBLE_BUFFER * 2)
-    
-    // 总高度
-    const totalHeight = totalPages * estimatedPageHeight.current
-    // 偏移量
-    const offsetY = (startPage - 1) * estimatedPageHeight.current
-    
-    // 已加载页面的 URL 映射
-    const loadedUrlMap = new Map<string, string>()
-    scrollImages.forEach(img => loadedUrlMap.set(img.path, img.url))
-
-    const elements: React.ReactNode[] = []
-    for (let page = startPage; page <= endPage; page++) {
-      const pageKey = String(page)
-      const imageUrl = loadedUrlMap.get(pageKey)
-      
-      if (imageUrl) {
-        elements.push(
-          <img 
-            key={page} 
-            src={imageUrl} 
-            alt={`第 ${page} 页`} 
-            className="max-w-full mx-auto block"
-            style={{ width: '100%', minHeight: `${estimatedPageHeight.current}px` }}
-            onLoad={(e) => {
-              // 图片加载完成后更新估算高度
-              const imgElement = e.target as HTMLImageElement
-              const actualHeight = imgElement.offsetHeight
-              if (actualHeight > 0 && actualHeight !== estimatedPageHeight.current) {
-                estimatedPageHeight.current = actualHeight
-              }
-            }}
-          />
-        )
-      } else {
-        elements.push(
-          <div 
-            key={page}
-            className="w-full flex items-center justify-center border border-border-1 rounded bg-bg-card"
-            style={{ height: `${estimatedPageHeight.current}px` }}
-          >
-            <div className="text-center">
-              <p className="text-text-muted text-sm">第 {page} 页</p>
-              <p className="text-text-muted text-xs mt-1">加载中...</p>
-            </div>
-          </div>
-        )
-      }
+    if (error) {
+      return (
+        <div
+          className="flex-1 flex items-center justify-center"
+          style={{ backgroundColor: themeColors.bg }}
+        >
+          <p style={{ color: '#E05050' }}>{error}</p>
+        </div>
+      )
     }
 
-    return (
-      <div 
-        ref={scrollContainerRef} 
-        className="flex-1 overflow-y-auto p-4 relative"
-        style={{ position: 'relative' }}
-      >
-        <div style={{ height: `${totalHeight}px`, position: 'relative' }}>
-          <div style={{ transform: `translateY(${offsetY}px)` }}>
-            {elements}
+    // ---- Scroll mode ----
+    if (readMode === 'scroll') {
+      return (
+        <div
+          ref={scrollContainerRef}
+          className="flex-1 overflow-y-auto"
+          style={{ backgroundColor: themeColors.bg }}
+          onScroll={handleScroll}
+        >
+          <div
+            className="mx-auto"
+            style={{
+              maxWidth: '800px',
+              padding: '32px 40px',
+              ...contentStyle,
+            }}
+          >
+            {sourceType === 'pdf' && pdfPages.map(page => (
+              <div key={page.page_number} style={{ marginBottom: '2em' }}>
+                <div style={{
+                  color: themeColors.secondary,
+                  fontSize: '12px',
+                  marginBottom: '8px',
+                  textAlign: 'center',
+                  opacity: 0.6,
+                }}>
+                  — Page {page.page_number} —
+                </div>
+                <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  {page.text || '(No text on this page)'}
+                </div>
+              </div>
+            ))}
+
+            {sourceType === 'txt' && (
+              <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {txtText}
+              </div>
+            )}
+
+            {sourceType === 'md' && (
+              <div
+                className="novel-md-content"
+                style={{
+                  '--md-code-bg': themeColors.codeBg,
+                  '--md-quote-border': themeColors.quoteBorder,
+                  '--md-link': themeColors.linkColor,
+                  '--md-border': themeColors.border,
+                } as React.CSSProperties}
+                dangerouslySetInnerHTML={{ __html: mdHtml }}
+              />
+            )}
           </div>
+
+          {/* Scroll-to-top button */}
+          <button
+            onClick={() => scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+            className="fixed bottom-12 right-8 w-10 h-10 bg-accent text-accent-text rounded-full shadow-lg flex items-center justify-center hover:bg-accent-hover transition-colors text-lg font-bold"
+            title="Scroll to top"
+          >
+            ↑
+          </button>
         </div>
-        <button onClick={() => scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
-          className="fixed bottom-8 right-8 w-10 h-10 bg-accent text-accent-text rounded-full shadow-lg flex items-center justify-center hover:bg-accent-hover transition-colors text-lg font-bold">
-          ↑
+      )
+    }
+
+    // ---- Paginated mode ----
+    return (
+      <div
+        className="flex-1 flex items-center justify-center relative group"
+        style={{ backgroundColor: themeColors.bg }}
+      >
+        <div
+          ref={contentRef}
+          className="overflow-hidden"
+          style={{
+            maxWidth: '800px',
+            width: '100%',
+            height: '100%',
+            padding: '32px 40px',
+            ...contentStyle,
+            overflowY: sourceType === 'md' ? 'hidden' : undefined,
+          }}
+        >
+          {sourceType === 'pdf' && (
+            <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              {currentPdfPageText || '(No text on this page)'}
+            </div>
+          )}
+
+          {sourceType === 'txt' && (
+            <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              {currentTxtPageText || '(Empty page)'}
+            </div>
+          )}
+
+          {sourceType === 'md' && (
+            <div
+              className="novel-md-content"
+              style={{
+                '--md-code-bg': themeColors.codeBg,
+                '--md-quote-border': themeColors.quoteBorder,
+                '--md-link': themeColors.linkColor,
+                '--md-border': themeColors.border,
+              } as React.CSSProperties}
+              dangerouslySetInnerHTML={{ __html: mdHtml }}
+            />
+          )}
+        </div>
+
+        {/* Previous page button */}
+        <button
+          onClick={goPrev}
+          disabled={currentPage <= 1}
+          className="fixed left-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
+          title="Previous page"
+          aria-label="Previous page"
+        >
+          <RxChevronLeft className="w-6 h-6" />
+        </button>
+
+        {/* Next page button */}
+        <button
+          onClick={goNext}
+          disabled={currentPage >= effectiveTotalPages}
+          className="fixed right-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
+          title="Next page"
+          aria-label="Next page"
+        >
+          <RxChevronRight className="w-6 h-6" />
         </button>
       </div>
     )
   }
 
+  // =========================================================================
+  // Main render
+  // =========================================================================
+
   return (
     <div className="h-full w-full bg-bg-main flex flex-col overflow-hidden">
-      <div className="flex items-center justify-between p-2 bg-bg-panel border-b border-border-1">
-        {/* 左侧：消息通知区域 */}
-        <div className="flex items-center gap-2">
+      {/* Inject MD content styles */}
+      <style>{MD_CONTENT_STYLES}</style>
+
+      {/* ---- Top toolbar ---- */}
+      <div
+        className="flex items-center justify-between px-3 bg-bg-panel border-b border-border-1 flex-shrink-0"
+        style={{ height: '40px' }}
+      >
+        {/* Left: title + notification */}
+        <div className="flex items-center gap-3 min-w-0 flex-1">
+          <span className="text-text-primary text-sm font-medium truncate">{bookTitle}</span>
           {notification && (
-            <span className="text-sm font-medium" style={{ color: '#CBE93A' }}>
+            <span className="text-sm font-medium flex-shrink-0" style={{ color: '#CBE93A' }}>
               {notification}
             </span>
           )}
         </div>
 
-        <div className="flex gap-2 items-center">
-          {/* 滚动模式开关 */}
+        {/* Right: controls */}
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {/* Read mode toggle */}
           <button
-            onClick={() => setReadModeWithCleanup(readMode === 'scroll' ? 'single' : 'scroll')}
+            onClick={() => setReadMode(readMode === 'paginated' ? 'scroll' : 'paginated')}
             className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
               readMode === 'scroll'
                 ? 'bg-accent text-accent-text'
                 : 'bg-bg-input text-text-secondary border border-border-1 hover:text-text-primary'
             }`}
-            title={readMode === 'scroll' ? '退出滚动模式' : '进入滚动模式'}
+            title={readMode === 'paginated' ? 'Switch to scroll mode' : 'Switch to paginated mode'}
           >
-            滚动
+            {readMode === 'paginated' ? 'Paginated' : 'Scroll'}
           </button>
-          {/* 单页/双页滑块切换 */}
-          {readMode !== 'scroll' && (
-            <div
-              className="relative flex items-center w-24 h-7 bg-bg-input border border-border-1 rounded cursor-pointer select-none"
-              onClick={() => setReadModeWithCleanup(readMode === 'single' ? 'double' : 'single')}
-              title={readMode === 'single' ? '点击切换为双页' : '点击切换为单页'}
+
+          {/* Font size controls */}
+          <div className="flex items-center gap-1 bg-bg-input border border-border-1 rounded px-2 py-1">
+            <button
+              onClick={() => setFontSize(Math.max(FONT_SIZE_MIN, fontSize - FONT_SIZE_STEP))}
+              disabled={fontSize <= FONT_SIZE_MIN}
+              className="text-text-secondary hover:text-text-primary disabled:text-text-muted text-sm leading-none"
+              title="Decrease font size"
+              aria-label="Decrease font size"
             >
-              {/* 滑块背景 */}
-              <div
-                className="absolute top-0.5 bottom-0.5 w-1/2 bg-accent rounded transition-all duration-200"
-                style={{ left: readMode === 'single' ? '2px' : 'calc(50% - 2px)' }}
-              />
-              {/* 文字层 */}
-              <span className={`relative z-10 w-1/2 text-center text-xs font-medium transition-colors ${
-                readMode === 'single' ? 'text-accent-text' : 'text-text-secondary'
-              }`}>
-                单页
-              </span>
-              <span className={`relative z-10 w-1/2 text-center text-xs font-medium transition-colors ${
-                readMode === 'double' ? 'text-accent-text' : 'text-text-secondary'
-              }`}>
-                双页
-              </span>
-            </div>
-          )}
-          <button onClick={handleSaveProgress}
-            className="px-3 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary text-sm"
-            title="保存当前阅读进度">
-            保存进度
-          </button>
-          <button onClick={handleRestoreProgress}
-            className="px-3 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary text-sm"
-            title="恢复上次保存的阅读进度">
-            恢复进度
-          </button>
-          {readMode !== 'scroll' && (
-            <button onClick={() => setAutoPage(!autoPage)}
-              className={`px-2 py-1 rounded text-sm transition-colors flex items-center justify-center ${autoPage ? 'bg-accent text-accent-text font-medium' : 'bg-bg-hover hover:bg-toolbar-hover text-text-primary'}`}
-              title={autoPage ? '停止自动翻页' : '开始自动翻页'}>
-              {autoPage ? (
-                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-                  <rect x="6" y="4" width="4" height="16" rx="1" />
-                  <rect x="14" y="4" width="4" height="16" rx="1" />
-                </svg>
-              ) : (
-                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
+              A-
+            </button>
+            <span className="text-text-secondary text-xs min-w-[28px] text-center">{fontSize}</span>
+            <button
+              onClick={() => setFontSize(Math.min(FONT_SIZE_MAX, fontSize + FONT_SIZE_STEP))}
+              disabled={fontSize >= FONT_SIZE_MAX}
+              className="text-text-secondary hover:text-text-primary disabled:text-text-muted text-sm leading-none"
+              title="Increase font size"
+              aria-label="Increase font size"
+            >
+              A+
+            </button>
+          </div>
+
+          {/* Line height controls */}
+          <div className="flex items-center gap-1 bg-bg-input border border-border-1 rounded px-2 py-1">
+            <button
+              onClick={() => setLineHeight(
+                Math.max(LINE_HEIGHT_MIN, parseFloat((lineHeight - LINE_HEIGHT_STEP).toFixed(1))),
               )}
+              disabled={lineHeight <= LINE_HEIGHT_MIN}
+              className="text-text-secondary hover:text-text-primary disabled:text-text-muted text-xs leading-none"
+              title="Decrease line height"
+              aria-label="Decrease line height"
+            >
+              L-
+            </button>
+            <span className="text-text-secondary text-xs min-w-[28px] text-center">
+              {lineHeight.toFixed(1)}
+            </span>
+            <button
+              onClick={() => setLineHeight(
+                Math.min(LINE_HEIGHT_MAX, parseFloat((lineHeight + LINE_HEIGHT_STEP).toFixed(1))),
+              )}
+              disabled={lineHeight >= LINE_HEIGHT_MAX}
+              className="text-text-secondary hover:text-text-primary disabled:text-text-muted text-xs leading-none"
+              title="Increase line height"
+              aria-label="Increase line height"
+            >
+              L+
+            </button>
+          </div>
+
+          {/* Theme selector */}
+          <div className="flex items-center gap-1 bg-bg-input border border-border-1 rounded px-1.5 py-1">
+            {(['dark', 'light', 'sepia'] as ThemeMode[]).map(t => (
+              <button
+                key={t}
+                onClick={() => setTheme(t)}
+                className={`w-5 h-5 rounded-full border-2 transition-colors ${
+                  theme === t ? 'border-accent' : 'border-border-2 hover:border-border-1'
+                }`}
+                style={{ backgroundColor: THEMES[t].bg }}
+                title={`${t.charAt(0).toUpperCase() + t.slice(1)} theme`}
+                aria-label={`${t} theme`}
+              />
+            ))}
+          </div>
+
+          {/* Chapter panel toggle */}
+          {chapters.length > 0 && (
+            <button
+              onClick={() => setShowChapterPanel(!showChapterPanel)}
+              className={`px-3 py-1 rounded text-sm transition-colors ${
+                showChapterPanel
+                  ? 'bg-accent text-accent-text font-medium'
+                  : 'bg-bg-hover hover:bg-toolbar-hover text-text-primary'
+              }`}
+              title="Table of contents"
+            >
+              Chapters
             </button>
           )}
 
-          {readMode !== 'scroll' && (
-            <button onClick={() => { setZoomMode(!zoomMode); if (!zoomMode) { setZoomLevelState(100); resetPan() } }}
-              className={`px-3 py-1 rounded text-sm transition-colors ${zoomMode ? 'bg-accent text-accent-text font-medium' : 'bg-bg-hover hover:bg-toolbar-hover text-text-primary'}`}>
-              滚轮缩放
-            </button>
-          )}
-          {readMode !== 'scroll' && zoomMode && (
-            <>
-              <button onClick={() => { setZoomLevelState(100); resetPan() }}
-                className="px-2 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary text-sm flex items-center justify-center"
-                title="适应窗口">
-                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
-                </svg>
-              </button>
-              <input
-                type="range"
-                className="zoom-slider"
-                min={120}
-                max={320}
-                value={zoomLevelState}
-                onChange={(e) => setZoomLevelState(Number(e.target.value))}
-                style={{ '--slider-fill': `${((zoomLevelState - 120) / (320 - 120)) * 100}%` } as React.CSSProperties}
-                aria-label="缩放级别"
-              />
-              <span className="text-text-secondary text-sm min-w-[45px]">{zoomLevelState}%</span>
-            </>
-          )}
-          {/* 缩略图按钮 */}
+          {/* Save / Restore progress */}
           <button
-            onClick={() => setShowThumbnailPanel(!showThumbnailPanel)}
-            className={`px-3 py-1 rounded text-sm transition-colors ${showThumbnailPanel ? 'bg-accent text-accent-text font-medium' : 'bg-bg-hover hover:bg-toolbar-hover text-text-primary'}`}
-            title="缩略图面板"
+            onClick={handleSaveProgress}
+            className="px-3 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary text-sm"
+            title="Save reading progress"
           >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
-            </svg>
+            Save
+          </button>
+          <button
+            onClick={handleRestoreProgress}
+            className="px-3 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary text-sm"
+            title="Restore reading progress"
+          >
+            Restore
+          </button>
+
+          {/* Close */}
+          <button
+            onClick={handleClose}
+            className="px-2 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary"
+            title="Close"
+            aria-label="Close reader"
+          >
+            <RxCross2 className="w-4 h-4" />
           </button>
         </div>
       </div>
 
+      {/* ---- Main content area ---- */}
       <div className="flex flex-1 overflow-hidden">
-        {/* 主阅读区域 */}
-        <div className="flex-1 overflow-hidden">
-          {readMode === 'single' && renderSinglePage()}
-          {readMode === 'double' && renderDoublePage()}
-          {readMode === 'scroll' && renderScrollMode()}
-        </div>
+        {renderContent()}
 
-        {/* 缩略图面板 */}
-        {showThumbnailPanel && (
-          <>
-            <div
-              className="flex-shrink-0 bg-bg-panel border-l border-border-1 flex flex-col overflow-hidden"
-              style={{ width: thumbnailPanelWidth }}
-            >
-              <div className="p-2 border-b border-border-1 flex items-center justify-between">
-                <span className="text-text-primary text-xs font-medium">缩略图</span>
-                <button onClick={() => setShowThumbnailPanel(false)} className="text-text-muted hover:text-text-primary">
-                  <RxCross2 className="w-4 h-4" />
-                </button>
-              </div>
-              <div className="p-2 border-b border-border-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-text-muted text-xs">大小</span>
-                  <input
-                    type="range"
-                    min="60"
-                    max="200"
-                    value={thumbnailSize}
-                    onChange={(e) => setThumbnailSize(Number(e.target.value))}
-                    className="flex-1 accent-accent"
-                  />
-                </div>
-              </div>
-              <div className="flex-1 overflow-y-auto p-2">
-                <div className="flex flex-wrap gap-1 justify-center">
-                  {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
-                    <button
-                      key={page}
-                      onClick={() => {
-                        setCurrentPage(page)
-                        if (readMode === 'scroll') {
-                          scrollContainerRef.current?.scrollTo({ top: (page - 1) * estimatedPageHeight.current, behavior: 'smooth' })
-                        }
-                      }}
-                      className={`relative rounded overflow-hidden border-2 transition-colors ${
-                        page === currentPage ? 'border-accent' : 'border-transparent hover:border-border-2'
-                      }`}
-                      style={{ width: thumbnailSize, height: thumbnailSize * 1.4 }}
-                      title={`第 ${page} 页`}
-                    >
-                      <ThumbnailImage page={page} size={thumbnailSize} />
-                      <span className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[10px] text-center py-0.5">
-                        {page}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
+        {/* Chapter sidebar panel */}
+        {showChapterPanel && chapters.length > 0 && (
+          <div
+            className="flex-shrink-0 bg-bg-panel border-l border-border-1 flex flex-col overflow-hidden"
+            style={{ width: '260px' }}
+          >
+            <div className="p-2 border-b border-border-1 flex items-center justify-between">
+              <span className="text-text-primary text-xs font-medium">Table of Contents</span>
+              <button
+                onClick={() => setShowChapterPanel(false)}
+                className="text-text-muted hover:text-text-primary"
+                aria-label="Close chapter panel"
+              >
+                <RxCross2 className="w-4 h-4" />
+              </button>
             </div>
-            {/* 缩略图面板宽度调整手柄 */}
-            <div
-              className="w-1 cursor-col-resize hover:bg-accent/50 transition-colors flex-shrink-0"
-              onMouseDown={(e) => {
-                e.preventDefault()
-                const startX = e.clientX
-                const startWidth = thumbnailPanelWidth
-                const handleMouseMove = (moveEvent: MouseEvent) => {
-                  const delta = startX - moveEvent.clientX
-                  const newWidth = Math.max(120, Math.min(400, startWidth + delta))
-                  setThumbnailPanelWidth(newWidth)
-                }
-                const handleMouseUp = () => {
-                  document.removeEventListener('mousemove', handleMouseMove)
-                  document.removeEventListener('mouseup', handleMouseUp)
-                }
-                document.addEventListener('mousemove', handleMouseMove)
-                document.addEventListener('mouseup', handleMouseUp)
-              }}
-            />
-          </>
+            <div className="flex-1 overflow-y-auto p-2">
+              {chapters.map(ch => {
+                const indentLevel = sourceType === 'md' ? (ch as databaseService.MdChapter).level || 1 : 1
+                return (
+                  <button
+                    key={ch.chapter_number}
+                    onClick={() => goToChapter(ch.chapter_number)}
+                    className={`w-full text-left px-3 py-2 rounded text-sm transition-colors ${
+                      currentChapter === ch.chapter_number
+                        ? 'bg-accent/10 text-accent'
+                        : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+                    }`}
+                    style={{ paddingLeft: `${indentLevel * 12 + 12}px` }}
+                  >
+                    {ch.title}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
         )}
       </div>
 
-      {/* 底部页面滑动条 - 参考WPF ReaderView样式 */}
-      {readMode !== 'scroll' && totalPages > 0 && (
-        <div
-          className="flex-shrink-0 flex items-center gap-3 px-3 select-none"
-          style={{ height: '32px', backgroundColor: '#212121', borderTop: '1px solid #2E2E2E' }}
-        >
-          <span style={{ fontSize: '12px', color: '#707070', fontWeight: 500, minWidth: '20px' }}>1</span>
-          <input
-            type="range"
-            min={1}
-            max={totalPages}
-            value={currentPage}
-            onChange={(e) => {
-              const page = Number(e.target.value)
-              setCurrentPage(page)
-            }}
-            className="page-slider flex-1"
-            style={{ '--slider-fill': `${((currentPage - 1) / (totalPages - 1)) * 100}%` } as React.CSSProperties}
-          />
-          <span style={{ fontSize: '12px', color: '#707070', fontWeight: 500, minWidth: '20px' }}>{totalPages}</span>
-        </div>
-      )}
-
-      {/* 底部页面信息栏 - 参考WPF样式 */}
+      {/* ---- Bottom info bar ---- */}
       <div
         className="flex-shrink-0 flex items-center select-none"
         style={{ height: '32px', backgroundColor: '#212121', borderTop: '1px solid #2E2E2E' }}
       >
         <div className="flex-1 px-3">
           <span style={{ fontSize: '11px', color: '#505050' }}>
-            {readMode === 'scroll' ? '滚动模式' : zoomMode ? `缩放: ${zoomLevelState}%` : '适应窗口'}
+            {readMode === 'scroll' ? 'Scroll mode' : 'Paginated mode'}
           </span>
         </div>
         <div className="flex items-center">
-          <span style={{ fontSize: '14px', color: '#D0D0D0' }}>{currentPage}</span>
-          <span style={{ fontSize: '14px', color: '#505050', margin: '0 4px' }}>/</span>
-          <span style={{ fontSize: '14px', color: '#D0D0D0' }}>{totalPages}</span>
+          {readMode === 'scroll' ? (
+            <span style={{ fontSize: '14px', color: '#D0D0D0' }}>{scrollPercentage}%</span>
+          ) : (
+            <>
+              <span style={{ fontSize: '14px', color: '#D0D0D0' }}>{currentPage}</span>
+              <span style={{ fontSize: '14px', color: '#505050', margin: '0 4px' }}>/</span>
+              <span style={{ fontSize: '14px', color: '#D0D0D0' }}>{effectiveTotalPages}</span>
+            </>
+          )}
         </div>
         <div className="flex-1 px-3 text-right">
-          {readMode !== 'scroll' && (
-            <span style={{ fontSize: '11px', color: '#505050' }}>
-              {zoomMode ? '自定义缩放' : '适应窗口'}
-            </span>
-          )}
+          <span style={{ fontSize: '11px', color: '#505050' }}>
+            {sourceType.toUpperCase()}
+          </span>
         </div>
       </div>
 
-      {/* Error Toast */}
-      {errorToast && (
+      {/* ---- Page slider (paginated mode only) ---- */}
+      {readMode === 'paginated' && effectiveTotalPages > 1 && (
+        <div
+          className="flex-shrink-0 flex items-center gap-3 px-3 select-none"
+          style={{ height: '32px', backgroundColor: '#212121', borderTop: '1px solid #2E2E2E' }}
+        >
+          <span style={{ fontSize: '12px', color: '#707070', fontWeight: 500, minWidth: '20px' }}>
+            1
+          </span>
+          <input
+            type="range"
+            min={1}
+            max={effectiveTotalPages}
+            value={currentPage}
+            onChange={(e) => goToPage(Number(e.target.value))}
+            className="page-slider flex-1"
+            style={{
+              '--slider-fill': `${((currentPage - 1) / Math.max(1, effectiveTotalPages - 1)) * 100}%`,
+            } as React.CSSProperties}
+            aria-label="Page slider"
+          />
+          <span style={{ fontSize: '12px', color: '#707070', fontWeight: 500, minWidth: '20px' }}>
+            {effectiveTotalPages}
+          </span>
+        </div>
+      )}
+
+      {/* ---- Error toast ---- */}
+      {error && (
         <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-red-900/90 border border-red-700 rounded-lg shadow-xl px-4 py-2 text-sm text-red-100 max-w-md">
-          {errorToast}
+          {error}
           <button
-            onClick={() => setErrorToast(null)}
+            onClick={() => setError(null)}
             className="ml-2 text-red-300 hover:text-red-100"
           >
             <RxCross2 className="w-4 h-4 inline" />

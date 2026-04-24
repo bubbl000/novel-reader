@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
 
-static SETTINGS_PATH: &str = "manga-reader-settings.json";
+static SETTINGS_PATH: &str = "novel-reader-settings.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
@@ -23,7 +23,7 @@ static CACHED_SETTINGS: LazyLock<Mutex<Option<AppSettings>>> = LazyLock::new(|| 
 
 pub fn get_settings_path() -> PathBuf {
     let mut path = dirs::document_dir().unwrap_or_else(|| PathBuf::from("."));
-    path.push("manga-reader");
+    path.push("novel-reader");
     path.push(SETTINGS_PATH);
     path
 }
