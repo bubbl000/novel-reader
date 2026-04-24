@@ -1502,14 +1502,8 @@ function LibraryView() {
         {selectedBook ? (
           <div className="flex-shrink-0 border-l border-border-1 flex flex-col overflow-hidden" style={{ width: rightPanelWidth, backgroundColor: '#212121', borderRadius: '0 0 8px 0' }}>
             {/* Header */}
-            <div className="p-3 border-b border-border-1 flex items-center justify-between">
+            <div className="p-3 border-b border-border-1 flex items-center">
               <h3 className="text-sm font-medium text-text-primary">{t('library.bookDetail')}</h3>
-              <button
-                onClick={() => selectBook(null)}
-                className="p-1 hover:bg-bg-hover rounded text-text-muted hover:text-text-primary transition-colors"
-              >
-                <RxCross2 className="w-4 h-4" />
-              </button>
             </div>
 
             <div className="flex-1 overflow-auto">

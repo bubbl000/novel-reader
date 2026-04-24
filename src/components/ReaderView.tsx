@@ -9,6 +9,7 @@ import {
   RxMagnifyingGlass,
   RxBookmark,
   RxBookmarkFilled,
+  RxPencil1,
 } from 'react-icons/rx'
 
 // ---------------------------------------------------------------------------
@@ -203,6 +204,9 @@ function ReaderView() {
   const notificationTimerRef = useRef<number | null>(null)
   const [showChapterPanel, setShowChapterPanel] = useState(false)
   const [scrollPercentage, setScrollPercentage] = useState(0)
+  const [sidebarWidth, setSidebarWidth] = useState(280)
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false)
+  const sidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
 
   // ---- Auto-save progress ----
   const autoSaveTimerRef = useRef<number | null>(null)
@@ -506,6 +510,15 @@ function ReaderView() {
     const percentage = maxScroll > 0 ? Math.round((scrollTop / maxScroll) * 100) : 0
     setScrollPercentage(percentage)
   }, [])
+
+  const scrollThrottleRef = useRef<number | null>(null)
+  const handleScrollThrottled = useCallback(() => {
+    if (scrollThrottleRef.current) return
+    scrollThrottleRef.current = window.setTimeout(() => {
+      scrollThrottleRef.current = null
+      handleScroll()
+    }, 100)
+  }, [handleScroll])
 
   // =========================================================================
   // Auto-save progress (debounced 3 seconds after page change)
@@ -1019,6 +1032,41 @@ function ReaderView() {
   }, [currentPage])
 
   // =========================================================================
+  // Sidebar resize handler
+  // =========================================================================
+
+  useEffect(() => {
+    if (!isResizingSidebar) return
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!sidebarResizeRef.current) return
+      const { startX, startWidth } = sidebarResizeRef.current
+      const delta = startX - e.clientX
+      const newWidth = Math.max(200, Math.min(500, startWidth + delta))
+      setSidebarWidth(newWidth)
+    }
+
+    const handleMouseUp = () => {
+      setIsResizingSidebar(false)
+      sidebarResizeRef.current = null
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+  }, [isResizingSidebar])
+
+  // =========================================================================
   // Cleanup on unmount
   // =========================================================================
 
@@ -1255,7 +1303,7 @@ function ReaderView() {
           <div
             ref={scrollContainerRef}
             className="flex-1 overflow-y-auto h-full"
-            onScroll={handleScroll}
+            onScroll={handleScrollThrottled}
             onMouseUp={handleMouseUp}
           >
             <div
@@ -1278,14 +1326,18 @@ function ReaderView() {
                     — {t('reader.pageDash', {0: page.page_number})} —
                   </div>
                   <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                    {renderAnnotatedText(page.text || t('reader.noTextOnPage'), page.page_number)}
+                    {highlights.length > 0 || searchQuery
+                      ? renderAnnotatedText(page.text || t('reader.noTextOnPage'), page.page_number)
+                      : (page.text || t('reader.noTextOnPage'))}
                   </div>
                 </div>
               ))}
 
               {sourceType === 'txt' && (
                 <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                  {renderAnnotatedText(txtText, currentPage)}
+                  {highlights.length > 0 || searchQuery
+                    ? renderAnnotatedText(txtText, currentPage)
+                    : txtText}
                 </div>
               )}
 
@@ -1368,7 +1420,7 @@ function ReaderView() {
         <button
           onClick={chapters.length > 0 ? goPrevChapter : goPrev}
           disabled={chapters.length > 0 ? (currentChapter ?? 1) <= 1 : currentPage <= 1}
-          className="fixed left-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
+          className="absolute left-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
           title={chapters.length > 0 ? t('reader.previousChapter') : t('reader.previousPage')}
           aria-label={chapters.length > 0 ? t('reader.previousChapter') : t('reader.previousPage')}
         >
@@ -1379,7 +1431,7 @@ function ReaderView() {
         <button
           onClick={chapters.length > 0 ? goNextChapter : goNext}
           disabled={chapters.length > 0 ? (currentChapter ?? 1) >= chapters.length : currentPage >= effectiveTotalPages}
-          className="fixed right-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
+          className="absolute right-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
           title={chapters.length > 0 ? t('reader.nextChapter') : t('reader.nextPage')}
           aria-label={chapters.length > 0 ? t('reader.nextChapter') : t('reader.nextPage')}
         >
@@ -1461,7 +1513,7 @@ function ReaderView() {
             }`}
             title={t('reader.bookmarks')}
           >
-            <span style={{ fontSize: '12px' }}>BM</span>
+            <RxBookmark className="w-4 h-4" />
           </button>
 
           {/* Highlight panel toggle */}
@@ -1478,7 +1530,7 @@ function ReaderView() {
             }`}
             title={t('reader.highlightAndNotes')}
           >
-            <span style={{ fontSize: '12px' }}>HL</span>
+            <RxPencil1 className="w-4 h-4" />
           </button>
 
           {/* Read mode toggle */}
@@ -1798,9 +1850,17 @@ function ReaderView() {
         {/* Chapter sidebar panel */}
         {showChapterPanel && chapters.length > 0 && (
           <div
-            className="flex-shrink-0 bg-bg-panel border-l border-border-1 flex flex-col overflow-hidden"
-            style={{ width: '260px' }}
+            className="flex-shrink-0 bg-bg-panel border-l border-border-1 flex flex-col overflow-hidden relative"
+            style={{ width: `${sidebarWidth}px` }}
           >
+            <div
+              className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-accent/50 z-10 transition-colors"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                sidebarResizeRef.current = { startX: e.clientX, startWidth: sidebarWidth }
+                setIsResizingSidebar(true)
+              }}
+            />
             <div className="p-2 border-b border-border-1 flex items-center justify-between">
               <span className="text-text-primary text-xs font-medium">{t('reader.chapterList')}</span>
               <button
@@ -1836,9 +1896,17 @@ function ReaderView() {
         {/* Bookmark sidebar panel */}
         {showBookmarkPanel && (
           <div
-            className="flex-shrink-0 bg-bg-panel border-l border-border-1 flex flex-col overflow-hidden"
-            style={{ width: '260px' }}
+            className="flex-shrink-0 bg-bg-panel border-l border-border-1 flex flex-col overflow-hidden relative"
+            style={{ width: `${sidebarWidth}px` }}
           >
+            <div
+              className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-accent/50 z-10 transition-colors"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                sidebarResizeRef.current = { startX: e.clientX, startWidth: sidebarWidth }
+                setIsResizingSidebar(true)
+              }}
+            />
             <div className="p-2 border-b border-border-1 flex items-center justify-between">
               <span className="text-text-primary text-xs font-medium">{t('reader.bookmarks')}</span>
               <button
@@ -1890,9 +1958,17 @@ function ReaderView() {
         {/* Highlight sidebar panel */}
         {showHighlightPanel && (
           <div
-            className="flex-shrink-0 bg-bg-panel border-l border-border-1 flex flex-col overflow-hidden"
-            style={{ width: '300px' }}
+            className="flex-shrink-0 bg-bg-panel border-l border-border-1 flex flex-col overflow-hidden relative"
+            style={{ width: `${sidebarWidth}px` }}
           >
+            <div
+              className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-accent/50 z-10 transition-colors"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                sidebarResizeRef.current = { startX: e.clientX, startWidth: sidebarWidth }
+                setIsResizingSidebar(true)
+              }}
+            />
             <div className="p-2 border-b border-border-1 flex items-center justify-between">
               <span className="text-text-primary text-xs font-medium">{t('reader.highlightAndNotes')}</span>
               <button
