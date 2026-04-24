@@ -14,7 +14,7 @@ function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
   const { t } = useTranslation()
   const [newPath, setNewPath] = useState('')
 
-  const handleSelectFolder = async () => {
+  const handleSelectAndAdd = async () => {
     try {
       const selected = await open({
         directory: true,
@@ -22,7 +22,8 @@ function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
         title: t('settings.selectDirectory'),
       })
       if (selected && typeof selected === 'string') {
-        setNewPath(selected)
+        await addLibraryPath(selected)
+        setNewPath('')
       }
     } catch (error) {
       console.error('Failed to select folder:', error)
@@ -118,12 +119,7 @@ function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
                 className="flex-1 px-3 py-2 bg-bg-input border border-border-1 rounded text-text-primary text-sm focus:outline-none focus:border-accent"
               />
               <button
-                onClick={async () => {
-                  await handleSelectFolder()
-                  if (newPath.trim()) {
-                    await handleAddPath()
-                  }
-                }}
+                onClick={handleSelectAndAdd}
                 className="px-4 py-2 bg-accent hover:bg-accent-hover rounded text-accent-text text-sm font-medium whitespace-nowrap"
               >
                 {t('settings.add')}
