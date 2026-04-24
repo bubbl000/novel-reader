@@ -231,3 +231,60 @@ export const parseMdFile = async (filePath: string): Promise<MdParseResult> => {
 export const readFileText = async (filePath: string): Promise<string> => {
   return await invoke<string>('read_file_text', { filePath })
 }
+
+export interface SearchResult {
+  page_number: number
+  snippet: string
+  match_start: number
+  match_end: number
+}
+
+export interface SearchResults {
+  results: SearchResult[]
+  total_matches: number
+}
+
+export const searchInPdf = async (filePath: string, query: string, maxResults?: number): Promise<SearchResults> => {
+  return await invoke<SearchResults>('search_in_pdf', { filePath, query, maxResults })
+}
+
+export const searchInTxt = async (filePath: string, query: string, maxResults?: number): Promise<SearchResults> => {
+  return await invoke<SearchResults>('search_in_txt', { filePath, query, maxResults })
+}
+
+export const searchInMd = async (filePath: string, query: string, maxResults?: number): Promise<SearchResults> => {
+  return await invoke<SearchResults>('search_in_md', { filePath, query, maxResults })
+}
+
+export interface ReadingSession {
+  id?: number
+  book_id: number
+  start_time: string
+  end_time?: string
+  duration_seconds: number
+  pages_read: number
+}
+
+export interface ReadingStats {
+  total_sessions: number
+  total_duration_seconds: number
+  total_pages_read: number
+  average_session_duration: number
+  longest_session: number
+}
+
+export const startReadingSession = async (bookId: number): Promise<number> => {
+  return await invoke<number>('start_reading_session', { bookId })
+}
+
+export const endReadingSession = async (sessionId: number, pagesRead: number): Promise<void> => {
+  await invoke('end_reading_session', { sessionId, pagesRead })
+}
+
+export const getReadingStats = async (bookId: number): Promise<ReadingStats> => {
+  return await invoke<ReadingStats>('get_reading_stats', { bookId })
+}
+
+export const getRecentSessions = async (bookId: number, limit?: number): Promise<ReadingSession[]> => {
+  return await invoke<ReadingSession[]>('get_recent_sessions', { bookId, limit })
+}

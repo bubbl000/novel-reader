@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { saveBookMetadata, batchSaveBookMetadata, getAllBooksMetadata, getBookIdByPath, getBookByPath, BookMetadata, Tag } from '../services/databaseService'
 import { SourceType } from '../types/sourceType'
+import { Language } from '../i18n/translations'
 
 let globalDropCallback: ((paths: string[]) => void) | null = null
 
@@ -78,6 +79,7 @@ interface BookStore {
   totalPages: number
   sortBy: string
   coverSize: number
+  language: Language
 
   loadLibrary: () => Promise<void>
   addLibraryPath: (path: string) => Promise<void>
@@ -97,6 +99,7 @@ interface BookStore {
   setPageSize: (size: number) => void
   togglePaginationMode: () => void
   setCoverSize: (size: number) => void
+  setLanguage: (lang: Language) => void
   applyFilters: () => Promise<void>
   loadBookTags: (book: BookItem) => Promise<void>
   addTag: (book: BookItem, tagName: string) => Promise<void>
@@ -350,6 +353,7 @@ export const useMangaStore = create<BookStore>((set, get) => ({
   totalPages: 0,
   sortBy: 'name',
   coverSize: 180,
+  language: (localStorage.getItem('novel-reader-language') as Language) || 'zh',
 
   loadLibrary: async () => {
     set({ isLoading: true, error: null })
@@ -598,6 +602,11 @@ export const useMangaStore = create<BookStore>((set, get) => ({
 
   setCoverSize: (size: number) => {
     set({ coverSize: size })
+  },
+
+  setLanguage: (lang: Language) => {
+    localStorage.setItem('novel-reader-language', lang)
+    set({ language: lang })
   },
 
   applyFilters: async () => {

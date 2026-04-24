@@ -171,7 +171,7 @@ pub fn init_database_schema() -> Result<(), String> {
         "
         PRAGMA journal_mode=WAL;
         PRAGMA foreign_keys=ON;
-        PRAGMA user_version=3;
+        PRAGMA user_version=4;
 
         CREATE TABLE IF NOT EXISTS book_metadata (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -255,6 +255,17 @@ pub fn init_database_schema() -> Result<(), String> {
             FOREIGN KEY (book_id) REFERENCES book_metadata(id) ON DELETE CASCADE,
             FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS reading_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            book_id INTEGER NOT NULL,
+            start_time TEXT NOT NULL,
+            end_time TEXT,
+            duration_seconds INTEGER NOT NULL DEFAULT 0,
+            pages_read INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (book_id) REFERENCES book_metadata(id) ON DELETE CASCADE
+        );
         ",
     ).map_err(|e| format!("无法创建表: {}", e))?;
 
@@ -294,6 +305,25 @@ pub fn init_database_schema() -> Result<(), String> {
             PRAGMA user_version=3;
             ",
         ).map_err(|e| format!("版本 3 迁移失败: {}", e))?;
+    }
+
+    if current_version < 4 {
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS reading_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                book_id INTEGER NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT,
+                duration_seconds INTEGER NOT NULL DEFAULT 0,
+                pages_read INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (book_id) REFERENCES book_metadata(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_reading_sessions_book_id ON reading_sessions(book_id, start_time DESC);
+            PRAGMA user_version=4;
+            ",
+        ).map_err(|e| format!("版本 4 迁移失败: {}", e))?;
     }
 
     Ok(())

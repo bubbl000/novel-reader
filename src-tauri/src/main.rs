@@ -10,6 +10,8 @@ mod settings;
 mod pdf_text_extractor;
 mod txt_parser;
 mod md_parser;
+mod search_engine;
+mod reading_stats;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 use database::AppState;
@@ -421,6 +423,68 @@ fn read_file_text(file_path: String) -> Result<String, String> {
     }
 }
 
+#[tauri::command]
+async fn search_in_pdf(file_path: String, query: String, max_results: Option<usize>) -> Result<search_engine::SearchResults, String> {
+    tokio::task::spawn_blocking(move || {
+        let pdf_result = pdf_text_extractor::extract_text_from_pdf(&file_path)?;
+        let pages: Vec<(usize, String)> = pdf_result.pages.iter()
+            .map(|p| (p.page_number, p.text.clone()))
+            .collect();
+        Ok(search_engine::search_in_pdf_text(&pages, &query, max_results.unwrap_or(50)))
+    }).await.unwrap()
+}
+
+#[tauri::command]
+async fn search_in_txt(file_path: String, query: String, max_results: Option<usize>) -> Result<search_engine::SearchResults, String> {
+    tokio::task::spawn_blocking(move || {
+        let txt_result = txt_parser::parse_txt_file(&file_path)?;
+        Ok(search_engine::search_in_text(&txt_result.text, &query, max_results.unwrap_or(50)))
+    }).await.unwrap()
+}
+
+#[tauri::command]
+async fn search_in_md(file_path: String, query: String, max_results: Option<usize>) -> Result<search_engine::SearchResults, String> {
+    tokio::task::spawn_blocking(move || {
+        let md_result = md_parser::parse_md_file(&file_path)?;
+        let plain_text = html_to_plain_text(&md_result.html_content);
+        Ok(search_engine::search_in_text(&plain_text, &query, max_results.unwrap_or(50)))
+    }).await.unwrap()
+}
+
+fn html_to_plain_text(html: &str) -> String {
+    let re = regex::Regex::new(r"<[^>]+>").unwrap();
+    let text = re.replace_all(html, "").to_string();
+    text.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+}
+
+#[tauri::command]
+fn start_reading_session(state: State<AppState>, book_id: i64) -> Result<i64, String> {
+    let conn = state.db_conn.lock();
+    reading_stats::start_reading_session(&conn, book_id)
+}
+
+#[tauri::command]
+fn end_reading_session(state: State<AppState>, session_id: i64, pages_read: i64) -> Result<(), String> {
+    let conn = state.db_conn.lock();
+    reading_stats::end_reading_session(&conn, session_id, pages_read)
+}
+
+#[tauri::command]
+fn get_reading_stats(state: State<AppState>, book_id: i64) -> Result<reading_stats::ReadingStats, String> {
+    let conn = state.db_conn.lock();
+    reading_stats::get_reading_stats(&conn, book_id)
+}
+
+#[tauri::command]
+fn get_recent_sessions(state: State<AppState>, book_id: i64, limit: Option<i64>) -> Result<Vec<reading_stats::ReadingSession>, String> {
+    let conn = state.db_conn.lock();
+    reading_stats::get_recent_sessions(&conn, book_id, limit.unwrap_or(10))
+}
+
 fn main() {
     if let Err(e) = database::init_database_schema() {
         eprintln!("数据库表初始化失败: {}", e);
@@ -487,6 +551,13 @@ fn main() {
             parse_txt_file,
             parse_md_file,
             read_file_text,
+            search_in_pdf,
+            search_in_txt,
+            search_in_md,
+            start_reading_session,
+            end_reading_session,
+            get_reading_stats,
+            get_recent_sessions,
         ])
         .setup(|app| {
             let main_window = app.get_webview_window("main")

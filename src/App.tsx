@@ -9,7 +9,6 @@ function App() {
     const checkWindowType = () => {
       const hash = window.location.hash
       const isReaderMode = hash.startsWith('#/reader') || hash.startsWith('#reader')
-      console.log('App checkWindowType:', { hash, isReaderMode })
       setIsReader(isReaderMode)
     }
 

@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useMangaStore } from '../stores/mangaStore'
 import { open } from '@tauri-apps/plugin-dialog'
+import { useTranslation } from '../i18n/useTranslation'
+import { Language } from '../i18n/translations'
 
 interface SettingsDialogProps {
   isOpen: boolean
@@ -8,22 +10,22 @@ interface SettingsDialogProps {
 }
 
 function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
-  const { libraryPaths, addLibraryPath, removeLibraryPath, scanAndLoad, isScanning, pageSize, setPageSize } = useMangaStore()
+  const { libraryPaths, addLibraryPath, removeLibraryPath, scanAndLoad, isScanning, language, setLanguage } = useMangaStore()
+  const { t } = useTranslation()
   const [newPath, setNewPath] = useState('')
-  const [pageSizeInput, setPageSizeInput] = useState(String(pageSize))
 
   const handleSelectFolder = async () => {
     try {
       const selected = await open({
         directory: true,
         multiple: false,
-        title: '选择漫画仓库目录',
+        title: t('settings.selectDirectory'),
       })
       if (selected && typeof selected === 'string') {
         setNewPath(selected)
       }
     } catch (error) {
-      console.error('选择文件夹失败:', error)
+      console.error('Failed to select folder:', error)
     }
   }
 
@@ -36,6 +38,10 @@ function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
 
   const handleRemovePath = async (path: string) => {
     await removeLibraryPath(path)
+  }
+
+  const handleLanguageChange = (lang: Language) => {
+    setLanguage(lang)
   }
 
   const handleSaveAndScan = async () => {
@@ -53,7 +59,9 @@ function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
       />
       <div className="relative bg-bg-card rounded-lg w-full max-w-lg max-h-[80vh] flex flex-col">
         <div className="flex items-center justify-between p-4 border-b border-border-1">
-          <h2 className="text-lg font-semibold text-text-primary">设置</h2>
+          <h2 className="text-lg font-semibold text-text-primary">
+            {t('settings.title')}
+          </h2>
           <button
             onClick={onClose}
             className="p-1 hover:bg-bg-hover rounded text-text-secondary"
@@ -64,8 +72,38 @@ function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
 
         <div className="p-4 flex-1 overflow-auto">
           <div className="mb-6">
-            <h3 className="text-sm font-medium text-text-primary mb-3">漫画仓库路径</h3>
-            
+            <h3 className="text-sm font-medium text-text-primary mb-3">
+              {t('settings.language')}
+            </h3>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => handleLanguageChange('zh')}
+                className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
+                  language === 'zh'
+                    ? 'bg-accent text-accent-text'
+                    : 'bg-bg-input border border-border-1 text-text-secondary hover:text-text-primary'
+                }`}
+              >
+                简体中文
+              </button>
+              <button
+                onClick={() => handleLanguageChange('en')}
+                className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
+                  language === 'en'
+                    ? 'bg-accent text-accent-text'
+                    : 'bg-bg-input border border-border-1 text-text-secondary hover:text-text-primary'
+                }`}
+              >
+                English
+              </button>
+            </div>
+          </div>
+
+          <div className="mb-6">
+            <h3 className="text-sm font-medium text-text-primary mb-3">
+              {t('settings.libraryPaths')}
+            </h3>
+
             <div className="flex gap-2 mb-4">
               <input
                 type="text"
@@ -76,7 +114,7 @@ function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
                     handleAddPath()
                   }
                 }}
-                placeholder="输入或选择漫画仓库路径"
+                placeholder={t('settings.enterPath')}
                 className="flex-1 px-3 py-2 bg-bg-input border border-border-1 rounded text-text-primary text-sm focus:outline-none focus:border-accent"
               />
               <button
@@ -88,7 +126,7 @@ function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
                 }}
                 className="px-4 py-2 bg-accent hover:bg-accent-hover rounded text-accent-text text-sm font-medium whitespace-nowrap"
               >
-                添加
+                {t('settings.add')}
               </button>
             </div>
 
@@ -105,7 +143,7 @@ function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
                     <button
                       onClick={() => handleRemovePath(path)}
                       className="p-1 text-text-muted hover:text-red-400 transition-colors"
-                      title="移除"
+                      title={t('settings.remove')}
                     >
                       ×
                     </button>
@@ -114,47 +152,15 @@ function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
               </div>
             ) : (
               <p className="text-text-muted text-sm text-center py-4">
-                暂无漫画仓库路径，请添加一个目录开始扫描
+                {t('settings.noPaths')}
               </p>
             )}
 
             {isScanning && (
-              <p className="text-accent text-sm mt-2">正在扫描...</p>
+              <p className="text-accent text-sm mt-2">
+                {t('settings.scanning')}
+              </p>
             )}
-          </div>
-
-          <div className="mb-6">
-            <h3 className="text-sm font-medium text-text-primary mb-3">分页设置</h3>
-            <div className="flex items-center gap-3">
-              <label className="text-text-secondary text-sm whitespace-nowrap">每页卡片数量</label>
-              <input
-                type="number"
-                min="1"
-                max="500"
-                value={pageSizeInput}
-                onChange={(e) => setPageSizeInput(e.target.value)}
-                onBlur={() => {
-                  const size = parseInt(pageSizeInput, 10)
-                  if (!isNaN(size) && size >= 1 && size <= 500) {
-                    setPageSize(size)
-                  } else {
-                    setPageSizeInput(String(pageSize))
-                  }
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    const size = parseInt(pageSizeInput, 10)
-                    if (!isNaN(size) && size >= 1 && size <= 500) {
-                      setPageSize(size)
-                    } else {
-                      setPageSizeInput(String(pageSize))
-                    }
-                  }
-                }}
-                className="w-20 px-3 py-2 bg-bg-input border border-border-1 rounded text-text-primary text-sm focus:outline-none focus:border-accent text-center"
-              />
-              <span className="text-text-muted text-xs">范围 1-500</span>
-            </div>
           </div>
         </div>
 
@@ -163,7 +169,7 @@ function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
             onClick={handleSaveAndScan}
             className="px-4 py-2 bg-accent hover:bg-accent-hover rounded text-accent-text text-sm font-medium"
           >
-            保存设置并扫描
+            {t('settings.saveAndScan')}
           </button>
         </div>
       </div>

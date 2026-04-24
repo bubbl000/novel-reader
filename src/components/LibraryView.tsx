@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react'
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { useMangaStore, FolderNode, BookItem, setDropCallback, initDragDropListener } from '../stores/mangaStore'
 import SettingsDialog from './SettingsDialog'
 import {
@@ -16,6 +17,7 @@ import {
 } from 'react-icons/rx'
 import { HiFunnel, HiTag, HiOutlineTag, HiBookOpen } from 'react-icons/hi2'
 import { invoke } from '@tauri-apps/api/core'
+import { useTranslation } from '../i18n/useTranslation'
 
 /** Format badge color mapping */
 const FORMAT_BADGE_COLORS: Record<string, { bg: string; text: string }> = {
@@ -58,6 +60,7 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
   const [newSubfolderName, setNewSubfolderName] = useState('')
   const [deleteBookCount, setDeleteBookCount] = useState(0)
   const [isDragOverFolder, setIsDragOverFolder] = useState(false)
+  const { t } = useTranslation()
 
   useEffect(() => {
     setIsExpanded(node.isExpanded)
@@ -75,7 +78,7 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
       await invoke('open_in_explorer', { path: node.path })
     } catch (err) {
       console.error('Failed to open in explorer:', err)
-      onShowMessage?.('Failed to open in explorer')
+      onShowMessage?.(t('library.openExplorerFailed'))
     }
   }
 
@@ -87,7 +90,7 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
       setShowDeleteConfirm(true)
     } catch (err) {
       console.error('Failed to count books in folder:', err)
-      onShowMessage?.('Failed to count books in folder')
+      onShowMessage?.(t('library.openExplorerFailed'))
     }
   }
 
@@ -95,11 +98,11 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
     setShowDeleteConfirm(false)
     try {
       await invoke('delete_file_or_folder', { path: node.path })
-      onShowMessage?.(`Folder "${node.name}" deleted`)
+      onShowMessage?.(t('library.deleted', {0: node.name}))
       useMangaStore.getState().scanAndLoad()
     } catch (err) {
       console.error('Delete failed:', err)
-      onShowMessage?.('Delete failed')
+      onShowMessage?.(t('library.deleteFailed'))
     }
   }
 
@@ -131,7 +134,7 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
       useMangaStore.getState().scanAndLoad()
     } catch (err) {
       console.error('Rename folder failed:', err)
-      onShowMessage?.('Rename folder failed')
+      onShowMessage?.(t('library.renameFolderFailed'))
     }
   }
 
@@ -162,7 +165,7 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
       useMangaStore.getState().scanAndLoad()
     } catch (err) {
       console.error('Create subfolder failed:', err)
-      onShowMessage?.('Create subfolder failed')
+      onShowMessage?.(t('library.createSubfolderFailed'))
     }
   }
 
@@ -225,34 +228,34 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
               onClick={handleRefresh}
               className="w-full px-3 py-1.5 text-left text-xs text-text-primary hover:bg-bg-hover transition-colors"
             >
-              Refresh
+              {t('library.refresh')}
             </button>
             <div className="h-px bg-border-1 my-1" />
             <button
               onClick={handleOpenInExplorer}
               className="w-full px-3 py-1.5 text-left text-xs text-text-primary hover:bg-bg-hover transition-colors"
             >
-              Open in Explorer
+              {t('library.openInExplorer')}
             </button>
             <button
               onClick={handleCreateSubfolder}
               className="w-full px-3 py-1.5 text-left text-xs text-text-primary hover:bg-bg-hover transition-colors"
             >
-              New Subfolder
+              {t('library.createSubfolder')}
             </button>
             <div className="h-px bg-border-1 my-1" />
             <button
               onClick={handleRenameClick}
               className="w-full px-3 py-1.5 text-left text-xs text-text-primary hover:bg-bg-hover transition-colors"
             >
-              Rename
+              {t('library.rename')}
             </button>
             <div className="h-px bg-border-1 my-1" />
             <button
               onClick={handleDeleteClick}
               className="w-full px-3 py-1.5 text-left text-xs text-red-400 hover:bg-bg-hover transition-colors"
             >
-              Delete
+              {t('library.confirmDeleteBtn')}
             </button>
           </div>
         </>
@@ -261,15 +264,15 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
       {showRenameDialog && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
           <div className="bg-bg-panel border border-border-1 rounded-lg shadow-xl p-6 max-w-sm w-full mx-4">
-            <h3 className="text-sm font-medium text-text-primary mb-3">Rename Folder</h3>
+            <h3 className="text-sm font-medium text-text-primary mb-3">{t('library.renameFolder')}</h3>
             <p className="text-text-secondary text-xs mb-2">
-              Rename "{node.name}"
+              {t('library.renameFrom', {0: node.name})}
             </p>
             <input
               type="text"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
-              placeholder="Enter new name"
+              placeholder={t('library.newName')}
               className="w-full px-2 py-1.5 bg-bg-input border border-border-1 rounded text-xs text-text-primary placeholder-text-muted focus:outline-none focus:border-accent mb-4"
               autoFocus
               onKeyDown={(e) => e.key === 'Enter' && handleConfirmRename()}
@@ -279,13 +282,13 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
                 onClick={() => { setShowRenameDialog(false); setNewName(''); }}
                 className="px-3 py-1.5 bg-bg-hover hover:bg-border-1 rounded text-text-secondary text-xs transition-colors"
               >
-                Cancel
+                {t('library.cancel')}
               </button>
               <button
                 onClick={handleConfirmRename}
                 className="px-3 py-1.5 bg-accent hover:bg-accent-hover rounded text-accent-text text-xs transition-colors"
               >
-                Confirm
+                {t('library.confirm')}
               </button>
             </div>
           </div>
@@ -295,15 +298,15 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
       {showCreateSubfolder && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
           <div className="bg-bg-panel border border-border-1 rounded-lg shadow-xl p-6 max-w-sm w-full mx-4">
-            <h3 className="text-sm font-medium text-text-primary mb-3">New Subfolder</h3>
+            <h3 className="text-sm font-medium text-text-primary mb-3">{t('library.createSubfolder')}</h3>
             <p className="text-text-secondary text-xs mb-2">
-              Create a new subfolder under "{node.name}"
+              {t('library.createSubfolderIn', {0: node.name})}
             </p>
             <input
               type="text"
               value={newSubfolderName}
               onChange={(e) => setNewSubfolderName(e.target.value)}
-              placeholder="Enter folder name"
+              placeholder={t('library.folderName')}
               className="w-full px-2 py-1.5 bg-bg-input border border-border-1 rounded text-xs text-text-primary placeholder-text-muted focus:outline-none focus:border-accent mb-4"
               autoFocus
               onKeyDown={(e) => e.key === 'Enter' && handleConfirmCreateSubfolder()}
@@ -313,13 +316,13 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
                 onClick={() => { setShowCreateSubfolder(false); setNewSubfolderName(''); }}
                 className="px-3 py-1.5 bg-bg-hover hover:bg-border-1 rounded text-text-secondary text-xs transition-colors"
               >
-                Cancel
+                {t('library.cancel')}
               </button>
               <button
                 onClick={handleConfirmCreateSubfolder}
                 className="px-3 py-1.5 bg-accent hover:bg-accent-hover rounded text-accent-text text-xs transition-colors"
               >
-                Create
+                {t('library.create')}
               </button>
             </div>
           </div>
@@ -329,30 +332,30 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
       {showDeleteConfirm && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
           <div className="bg-bg-panel border border-border-1 rounded-lg shadow-xl p-6 max-w-sm w-full mx-4">
-            <h3 className="text-sm font-medium text-text-primary mb-3">Confirm Delete</h3>
+            <h3 className="text-sm font-medium text-text-primary mb-3">{t('library.confirmDelete')}</h3>
             <p className="text-text-secondary text-xs mb-2">
-              Are you sure you want to delete "{node.name}"?
+              {t('library.confirmDeleteFolder', {0: node.name})}
             </p>
             {deleteBookCount > 0 && (
               <p className="text-red-400 text-xs mb-2">
-                This will affect {deleteBookCount} book(s). Their database records will be removed.
+                {t('library.affectBooks', {0: deleteBookCount})}
               </p>
             )}
             <p className="text-text-muted text-xs mb-4">
-              This will delete the file or folder in the file explorer. This action cannot be undone.
+              {t('library.irreversibleWarning')}
             </p>
             <div className="flex gap-2 justify-end">
               <button
                 onClick={() => setShowDeleteConfirm(false)}
                 className="px-3 py-1.5 bg-bg-hover hover:bg-border-1 rounded text-text-secondary text-xs transition-colors"
               >
-                Cancel
+                {t('library.cancel')}
               </button>
               <button
                 onClick={handleConfirmDelete}
                 className="px-3 py-1.5 bg-red-600 hover:bg-red-700 rounded text-white text-xs transition-colors"
               >
-                Confirm Delete
+                {t('library.confirmDeleteBtn')}
               </button>
             </div>
           </div>
@@ -375,6 +378,7 @@ const BookCard = React.memo(function BookCard({ book, onClick, isSelected, onDra
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [showRenameDialog, setShowRenameDialog] = useState(false)
   const [newBookName, setNewBookName] = useState('')
+  const { t } = useTranslation()
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button === 0) {
@@ -395,7 +399,7 @@ const BookCard = React.memo(function BookCard({ book, onClick, isSelected, onDra
       await invoke('open_in_explorer', { path: folderPath })
     } catch (err) {
       console.error('Failed to open in explorer:', err)
-      onShowMessage?.('Failed to open in explorer')
+      onShowMessage?.(t('library.openExplorerFailed'))
     }
   }
 
@@ -434,7 +438,7 @@ const BookCard = React.memo(function BookCard({ book, onClick, isSelected, onDra
       useMangaStore.getState().scanAndLoad()
     } catch (err) {
       console.error('Rename failed:', err)
-      onShowMessage?.('Rename failed')
+      onShowMessage?.(t('library.renameFailed'))
     }
   }
 
@@ -442,11 +446,11 @@ const BookCard = React.memo(function BookCard({ book, onClick, isSelected, onDra
     setShowDeleteConfirm(false)
     try {
       await invoke('delete_file_or_folder', { path: book.path })
-      onShowMessage?.(`"${book.title}" deleted`)
+      onShowMessage?.(t('library.deleted', {0: book.title}))
       useMangaStore.getState().scanAndLoad()
     } catch (err) {
       console.error('Delete failed:', err)
-      onShowMessage?.('Delete failed')
+      onShowMessage?.(t('library.deleteFailed'))
     }
   }
 
@@ -464,7 +468,17 @@ const BookCard = React.memo(function BookCard({ book, onClick, isSelected, onDra
         onContextMenu={handleContextMenu}
         onMouseDown={handleMouseDown}
         onDoubleClick={() => {
-          window.location.hash = `#reader#${book.id}#${encodeURIComponent(book.title)}#${encodeURIComponent(book.path)}#${book.sourceType}`
+          const label = `reader-${book.id}-${Date.now()}`
+          const url = `/#reader#${book.id}#${encodeURIComponent(book.title)}#${encodeURIComponent(book.path)}#${book.sourceType}`
+          new WebviewWindow(label, {
+            url,
+            title: `${book.title} - Novel Reader`,
+            width: 1000,
+            height: 700,
+            minWidth: 600,
+            minHeight: 400,
+            resizable: true,
+          })
         }}
       >
         {/* Book icon area with format badge */}
@@ -517,9 +531,9 @@ const BookCard = React.memo(function BookCard({ book, onClick, isSelected, onDra
 
           {/* Chapter count + page info */}
           <p className="text-[10px] mt-0.5" style={{ color: '#A0A0A0' }}>
-            {book.chapterCount > 0 ? `${book.chapterCount} chapters` : ''}
+            {book.chapterCount > 0 ? `${book.chapterCount} ${t('library.chapter')}` : ''}
             {book.chapterCount > 0 && book.totalPages > 0 ? ' · ' : ''}
-            {book.totalPages > 0 ? `${book.totalPages} pages` : ''}
+            {book.totalPages > 0 ? `${book.totalPages} ${t('library.page')}` : ''}
           </p>
 
           {/* Progress bar */}
@@ -527,8 +541,8 @@ const BookCard = React.memo(function BookCard({ book, onClick, isSelected, onDra
             <div className="flex items-center justify-between mb-0.5">
               <span className="text-[10px]" style={{ color: '#909090' }}>
                 {book.totalPages > 0
-                  ? (book.currentPage > 0 ? `Page ${book.currentPage}` : 'Not started')
-                  : 'Not started'}
+                  ? (book.currentPage > 0 ? t('library.currentPage', {0: book.currentPage}) : t('library.notStarted'))
+                  : t('library.notStarted')}
               </span>
               <span className="text-[10px]" style={{ color: '#909090' }}>
                 {book.totalPages > 0
@@ -557,28 +571,28 @@ const BookCard = React.memo(function BookCard({ book, onClick, isSelected, onDra
               onClick={handleRefresh}
               className="w-full px-3 py-1.5 text-left text-xs text-text-primary hover:bg-bg-hover transition-colors"
             >
-              Refresh
+              {t('library.refresh')}
             </button>
             <div className="h-px bg-border-1 my-1" />
             <button
               onClick={handleOpenInExplorer}
               className="w-full px-3 py-1.5 text-left text-xs text-text-primary hover:bg-bg-hover transition-colors"
             >
-              Open in Explorer
+              {t('library.openInExplorer')}
             </button>
             <div className="h-px bg-border-1 my-1" />
             <button
               onClick={handleRenameClick}
               className="w-full px-3 py-1.5 text-left text-xs text-text-primary hover:bg-bg-hover transition-colors"
             >
-              Rename
+              {t('library.rename')}
             </button>
             <div className="h-px bg-border-1 my-1" />
             <button
               onClick={handleDeleteClick}
               className="w-full px-3 py-1.5 text-left text-xs text-red-400 hover:bg-bg-hover transition-colors"
             >
-              Delete
+              {t('library.confirmDeleteBtn')}
             </button>
           </div>
         </>
@@ -587,25 +601,25 @@ const BookCard = React.memo(function BookCard({ book, onClick, isSelected, onDra
       {showDeleteConfirm && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
           <div className="bg-bg-panel border border-border-1 rounded-lg shadow-xl p-6 max-w-sm w-full mx-4">
-            <h3 className="text-sm font-medium text-text-primary mb-3">Confirm Delete</h3>
+            <h3 className="text-sm font-medium text-text-primary mb-3">{t('library.confirmDelete')}</h3>
             <p className="text-text-secondary text-xs mb-2">
-              Are you sure you want to delete "{book.title}"?
+              {t('library.confirmDeleteFolder', {0: book.title})}
             </p>
             <p className="text-text-muted text-xs mb-4">
-              This will delete the file in the file explorer. This action cannot be undone.
+              {t('library.irreversibleWarning')}
             </p>
             <div className="flex gap-2 justify-end">
               <button
                 onClick={() => setShowDeleteConfirm(false)}
                 className="px-3 py-1.5 bg-bg-hover hover:bg-border-1 rounded text-text-secondary text-xs transition-colors"
               >
-                Cancel
+                {t('library.cancel')}
               </button>
               <button
                 onClick={handleConfirmDelete}
                 className="px-3 py-1.5 bg-red-600 hover:bg-red-700 rounded text-white text-xs transition-colors"
               >
-                Confirm Delete
+                {t('library.confirmDeleteBtn')}
               </button>
             </div>
           </div>
@@ -615,15 +629,15 @@ const BookCard = React.memo(function BookCard({ book, onClick, isSelected, onDra
       {showRenameDialog && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
           <div className="bg-bg-panel border border-border-1 rounded-lg shadow-xl p-6 max-w-sm w-full mx-4">
-            <h3 className="text-sm font-medium text-text-primary mb-3">Rename</h3>
+            <h3 className="text-sm font-medium text-text-primary mb-3">{t('library.renameBook')}</h3>
             <p className="text-text-secondary text-xs mb-2">
-              Rename "{book.title}"
+              {t('library.renameFrom', {0: book.title})}
             </p>
             <input
               type="text"
               value={newBookName}
               onChange={(e) => setNewBookName(e.target.value)}
-              placeholder="Enter new name"
+              placeholder={t('library.newName')}
               className="w-full px-2 py-1.5 bg-bg-input border border-border-1 rounded text-xs text-text-primary placeholder-text-muted focus:outline-none focus:border-accent mb-4"
               autoFocus
               onKeyDown={(e) => e.key === 'Enter' && handleConfirmRename()}
@@ -633,13 +647,13 @@ const BookCard = React.memo(function BookCard({ book, onClick, isSelected, onDra
                 onClick={() => { setShowRenameDialog(false); setNewBookName(''); }}
                 className="px-3 py-1.5 bg-bg-hover hover:bg-border-1 rounded text-text-secondary text-xs transition-colors"
               >
-                Cancel
+                {t('library.cancel')}
               </button>
               <button
                 onClick={handleConfirmRename}
                 className="px-3 py-1.5 bg-accent hover:bg-accent-hover rounded text-accent-text text-xs transition-colors"
               >
-                Confirm
+                {t('library.confirm')}
               </button>
             </div>
           </div>
@@ -684,6 +698,7 @@ function LibraryView() {
     libraryPaths,
     error: storeError,
   } = useMangaStore()
+  const { t } = useTranslation()
 
   // Sync store error state to statusMessage
   useEffect(() => {
@@ -788,10 +803,20 @@ function LibraryView() {
 
   const handleOpenReader = async (book: BookItem) => {
     try {
-      window.location.hash = `#reader#${book.id}#${encodeURIComponent(book.title)}#${encodeURIComponent(book.path)}#${book.sourceType}`
+      const label = `reader-${book.id}-${Date.now()}`
+      const url = `/#reader#${book.id}#${encodeURIComponent(book.title)}#${encodeURIComponent(book.path)}#${book.sourceType}`
+      new WebviewWindow(label, {
+        url,
+        title: `${book.title} - Novel Reader`,
+        width: 1000,
+        height: 700,
+        minWidth: 600,
+        minHeight: 400,
+        resizable: true,
+      })
     } catch (error) {
       console.error('Failed to open reader:', error)
-      setStatusMessage('Failed to open reader')
+      setStatusMessage(t('library.openReaderFailed'))
     }
   }
 
@@ -827,9 +852,9 @@ function LibraryView() {
   }
 
   const sortOptions = [
-    { value: 'name', label: 'By Name' },
-    { value: 'date', label: 'By Date Added' },
-    { value: 'type', label: 'By Type' },
+    { value: 'name', label: t('library.sortByName') },
+    { value: 'date', label: t('library.sortByDate') },
+    { value: 'type', label: t('library.sortByType') },
   ]
 
   useEffect(() => {
@@ -838,7 +863,7 @@ function LibraryView() {
     setDropCallback(async (paths: string[]) => {
       setIsDragOverLibrary(false)
       if (libraryPaths.length === 0) {
-        setStatusMessage('Please add a library path in settings first')
+        setStatusMessage(t('library.addLibraryPathFirst'))
         return
       }
 
@@ -869,7 +894,7 @@ function LibraryView() {
             copyFailed = true
           }
         }
-        if (copyFailed) setStatusMessage('Some files failed to copy')
+        if (copyFailed) setStatusMessage(t('library.partialCopyFailed'))
       }
 
       if (conflicts.length > 0) {
@@ -900,7 +925,7 @@ function LibraryView() {
       }
     }
     if (copyFailed) {
-      setStatusMessage('Some files failed to copy')
+      setStatusMessage(t('library.partialCopyFailed'))
     }
     scanAndLoad()
   }
@@ -917,10 +942,10 @@ function LibraryView() {
   const handleDeleteTagGlobally = async (tagName: string) => {
     try {
       await invoke('delete_tag_by_name', { tagName })
-      setStatusMessage(`Tag "${tagName}" deleted`)
+      setStatusMessage(t('library.tagDeleted', {0: tagName}))
       await loadAllTags()
     } catch (err) {
-      setStatusMessage(`Failed to delete tag: ${err}`)
+      setStatusMessage(t('library.tagDeleteFailed'))
     }
   }
 
@@ -1031,11 +1056,11 @@ function LibraryView() {
 
     try {
       await invoke('move_folder', { sourcePath: dragged, targetParentPath: targetPath })
-      setStatusMessage('Folder moved successfully')
+      setStatusMessage(t('library.folderMoved'))
       useMangaStore.getState().scanAndLoad()
     } catch (err) {
       console.error('Move folder failed:', err)
-      setStatusMessage('Move folder failed')
+      setStatusMessage(t('library.folderMoveFailed'))
     } finally {
       setDraggedFolderPath(null)
       setDragOverFolderPath(null)
@@ -1050,11 +1075,11 @@ function LibraryView() {
 
     try {
       await invoke('move_file_to_folder', { sourcePath: bookPath, targetFolder: targetPath })
-      setStatusMessage('Book moved successfully')
+      setStatusMessage(t('library.bookMoved'))
       useMangaStore.getState().scanAndLoad()
     } catch (err) {
       console.error('Move book file failed:', err)
-      setStatusMessage('Move book file failed')
+      setStatusMessage(t('library.bookMoveFailed'))
     } finally {
       setDraggedBookPath(null)
       setDragOverFolderPath(null)
@@ -1090,8 +1115,8 @@ function LibraryView() {
         {isDragOverLibrary && (
           <div className="absolute inset-0 z-40 bg-accent bg-opacity-10 border-2 border-dashed border-accent flex items-center justify-center pointer-events-none">
             <div className="bg-bg-panel border border-accent rounded-xl px-8 py-4 text-center">
-              <p className="text-accent text-lg font-medium">Drop files to library</p>
-              <p className="text-text-muted text-sm mt-1">Files will be copied to the default library</p>
+              <p className="text-accent text-lg font-medium">{t('library.dragToLibrary')}</p>
+              <p className="text-text-muted text-sm mt-1">{t('library.filesCopiedToLibrary')}</p>
             </div>
           </div>
         )}
@@ -1111,7 +1136,7 @@ function LibraryView() {
                     handleSearch()
                   }
                 }}
-                placeholder="Search books..."
+                placeholder={t('library.searchPlaceholder')}
                 className="w-full pl-8 pr-8 py-1.5 bg-bg-input border border-border-1 rounded text-text-primary text-xs placeholder-text-muted focus:outline-none focus:border-accent"
               />
               {searchQuery ? (
@@ -1144,7 +1169,7 @@ function LibraryView() {
               }`}
             >
               <RxReader className="w-3.5 h-3.5" />
-              Library
+              {t('library.libraryTab')}
             </button>
             <button
               onClick={() => setViewMode('favorites')}
@@ -1155,7 +1180,7 @@ function LibraryView() {
               }`}
             >
               <RxStar className="w-3.5 h-3.5" />
-              Favorites
+              {t('library.favoritesTab')}
             </button>
             <button
               onClick={() => setViewMode('tags')}
@@ -1166,7 +1191,7 @@ function LibraryView() {
               }`}
             >
               <HiOutlineTag className="w-3.5 h-3.5" />
-              Tags
+              {t('library.tagsTab')}
             </button>
           </div>
 
@@ -1176,7 +1201,7 @@ function LibraryView() {
               {/* Folder Tree Header */}
               <div className="px-3 py-2 border-b border-border-1">
                 <span className="text-text-muted text-[10px] font-bold">
-                  Folders <span className="text-[#404040]">{folderTree[0]?.count || 0}</span>
+                  {t('library.folderLabel')} <span className="text-[#404040]">{folderTree[0]?.count || 0}</span>
                 </span>
               </div>
 
@@ -1199,7 +1224,7 @@ function LibraryView() {
                   <div className="p-4 text-center">
                     <HiBookOpen className="w-10 h-10 text-text-muted mx-auto mb-2 opacity-30" />
                     <p className="text-text-muted text-xs">
-                      Add a library path in settings
+                      {t('library.addLibraryPath')}
                     </p>
                   </div>
                 )}
@@ -1214,7 +1239,7 @@ function LibraryView() {
               className="w-full py-1.5 bg-bg-hover hover:bg-border-1 rounded text-text-secondary hover:text-text-primary text-xs flex items-center justify-center gap-1.5 transition-colors"
             >
               <RxGear className="w-3.5 h-3.5" />
-              Settings
+              {t('library.settings')}
             </button>
           </div>
         </div>
@@ -1232,7 +1257,7 @@ function LibraryView() {
             <>
               {/* Tag Toolbar */}
               <div className="h-10 flex-shrink-0 bg-bg-panel border-b border-border-1 flex items-center px-3 gap-2">
-                <span className="text-text-muted text-xs font-bold">All Tags</span>
+                <span className="text-text-muted text-xs font-bold">{t('library.allTags')}</span>
                 <div className="flex-1" />
                 <button
                   onClick={() => setShowTagManagement(!showTagManagement)}
@@ -1242,7 +1267,7 @@ function LibraryView() {
                       : 'bg-[#252525] border-border-1 text-text-secondary hover:text-accent hover:border-accent'
                   }`}
                 >
-                  {showTagManagement ? 'Done' : 'Manage Tags'}
+                  {showTagManagement ? t('library.done') : t('library.manageTags')}
                 </button>
               </div>
 
@@ -1278,8 +1303,8 @@ function LibraryView() {
                 ) : (
                   <div className="flex flex-col items-center justify-center h-full text-center">
                     <HiTag className="w-12 h-12 text-text-muted opacity-30 mb-4" />
-                    <p className="text-text-secondary text-sm mb-2">No tags yet</p>
-                    <p className="text-text-muted text-xs">Add tags to books from the detail panel</p>
+                    <p className="text-text-secondary text-sm mb-2">{t('library.noTags')}</p>
+                    <p className="text-text-muted text-xs">{t('library.noTagsHint')}</p>
                   </div>
                 )}
               </div>
@@ -1295,7 +1320,7 @@ function LibraryView() {
                       onClick={() => setPage(Math.max(1, currentPage - 1))}
                       disabled={currentPage === 1}
                       className="px-2 py-1 text-xs bg-bg-input border border-border-1 rounded text-text-secondary disabled:text-text-muted hover:text-text-primary hover:border-accent transition-colors"
-                      title="Previous page"
+                      title={t('library.previousPage')}
                     >
                       &lt;
                     </button>
@@ -1306,7 +1331,7 @@ function LibraryView() {
                       onClick={() => setPage(Math.min(totalPages, currentPage + 1))}
                       disabled={currentPage === totalPages}
                       className="px-2 py-1 text-xs bg-bg-input border border-border-1 rounded text-text-secondary disabled:text-text-muted hover:text-text-primary hover:border-accent transition-colors"
-                      title="Next page"
+                      title={t('library.nextPage')}
                     >
                       &gt;
                     </button>
@@ -1314,7 +1339,7 @@ function LibraryView() {
                 )}
 
                 <span className="text-text-secondary text-xs">
-                  {isScanning ? 'Scanning...' : selectedTag ? `Tag "${selectedTag}": ${totalFilteredCount} books` : `All (${totalFilteredCount})`}
+                  {isScanning ? t('library.scanning') : selectedTag ? `${t('library.tagsTab')} "${selectedTag}": ${totalFilteredCount}` : `${t('library.allBooks')} (${totalFilteredCount})`}
                 </span>
 
                 {selectedTag && (
@@ -1326,7 +1351,7 @@ function LibraryView() {
                     className="px-2 py-1 bg-[#252525] border border-border-1 rounded text-xs text-text-secondary hover:text-accent hover:border-accent transition-colors"
                   >
                     <RxCross2 className="w-3 h-3 inline mr-1" />
-                    Clear Tag
+                    {t('library.clearTag')}
                   </button>
                 )}
 
@@ -1339,7 +1364,7 @@ function LibraryView() {
                     className="px-2 py-1 bg-bg-input border border-border-1 rounded text-text-secondary hover:text-text-primary hover:border-accent text-xs flex items-center gap-1 transition-colors"
                   >
                     <HiFunnel className="w-3.5 h-3.5" />
-                    {sortOptions.find((s) => s.value === sortBy)?.label || 'Sort'}
+                    {sortOptions.find((s) => s.value === sortBy)?.label || t('library.sortBy')}
                   </button>
                   {showSortMenu && (
                     <>
@@ -1372,14 +1397,14 @@ function LibraryView() {
                       ? 'bg-accent text-accent-text font-medium border-accent'
                       : 'bg-bg-input text-text-secondary hover:text-text-primary border-border-1'
                   }`}
-                  title={isPaginationMode ? 'Pagination mode - click for show all' : 'Show all - click for pagination mode'}
+                  title={isPaginationMode ? t('library.pagination') : t('library.showAll')}
                 >
-                  {isPaginationMode ? 'Paged' : 'All'}
+                  {isPaginationMode ? t('library.pagination') : t('library.showAll')}
                 </button>
 
                 {/* Card Size Slider */}
                 <div className="flex items-center gap-1.5 text-text-muted text-xs">
-                  <span>Size</span>
+                  <span>{t('library.size')}</span>
                   <input
                     type="range"
                     min="120"
@@ -1399,12 +1424,12 @@ function LibraryView() {
                   }}
                   disabled={isScanning}
                   className="px-2 py-1 bg-bg-input border border-border-1 rounded text-text-secondary hover:text-text-primary hover:border-accent text-xs flex items-center gap-1 transition-colors disabled:opacity-50"
-                  title="Rescan library"
+                  title={t('library.rescan')}
                 >
                   <svg className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                   </svg>
-                  Refresh
+                  {t('library.refresh')}
                 </button>
               </div>
 
@@ -1427,14 +1452,14 @@ function LibraryView() {
                   <div className="flex flex-col items-center justify-center h-full text-center">
                     <HiBookOpen className="w-16 h-16 text-text-muted opacity-30 mb-4" />
                     <p className="mb-2 font-semibold" style={{ fontSize: '16px', color: '#808080' }}>
-                      {currentViewMode === 'favorites' ? 'No favorite books' : searchQuery ? 'No matching books found' : 'No books yet'}
+                      {currentViewMode === 'favorites' ? t('library.noFavorites') : searchQuery ? t('library.noSearchResults') : t('library.noBooks')}
                     </p>
                     <p style={{ fontSize: '12px', color: '#505050' }}>
                       {currentViewMode === 'favorites'
-                        ? 'Click the star icon on a book card to add favorites'
+                        ? t('library.addFavoriteHint')
                         : searchQuery
-                        ? 'Try adjusting your search terms'
-                        : 'Add a library path in settings to get started'
+                        ? t('library.adjustSearch')
+                        : t('library.addLibraryToStart')
                       }
                     </p>
                   </div>
@@ -1449,7 +1474,7 @@ function LibraryView() {
                     disabled={currentPage === 1}
                     className="px-2 py-0.5 text-xs text-text-secondary disabled:text-text-muted hover:text-text-primary transition-colors"
                   >
-                    Previous
+                    {t('library.previousPage')}
                   </button>
                   <span className="text-text-muted text-xs">
                     {currentPage} / {totalPages}
@@ -1459,7 +1484,7 @@ function LibraryView() {
                     disabled={currentPage === totalPages}
                     className="px-2 py-0.5 text-xs text-text-secondary disabled:text-text-muted hover:text-text-primary transition-colors"
                   >
-                    Next
+                    {t('library.nextPage')}
                   </button>
                 </div>
               )}
@@ -1478,7 +1503,7 @@ function LibraryView() {
           <div className="flex-shrink-0 border-l border-border-1 flex flex-col overflow-hidden" style={{ width: rightPanelWidth, backgroundColor: '#212121', borderRadius: '0 0 8px 0' }}>
             {/* Header */}
             <div className="p-3 border-b border-border-1 flex items-center justify-between">
-              <h3 className="text-sm font-medium text-text-primary">Book Details</h3>
+              <h3 className="text-sm font-medium text-text-primary">{t('library.bookDetail')}</h3>
               <button
                 onClick={() => selectBook(null)}
                 className="p-1 hover:bg-bg-hover rounded text-text-muted hover:text-text-primary transition-colors"
@@ -1537,46 +1562,46 @@ function LibraryView() {
                 <div className="space-y-2">
                   {/* Author */}
                   <div className="flex items-center">
-                    <span className="w-20 font-bold" style={{ fontSize: '10px', color: '#505050' }}>Author</span>
+                    <span className="w-20 font-bold" style={{ fontSize: '10px', color: '#505050' }}>{t('library.author')}</span>
                     <span style={{ fontSize: '11px', color: '#686868' }}>
                       {selectedBook.author || '-'}
                     </span>
                   </div>
                   {/* Pages */}
                   <div className="flex items-center">
-                    <span className="w-20 font-bold" style={{ fontSize: '10px', color: '#505050' }}>Pages</span>
+                    <span className="w-20 font-bold" style={{ fontSize: '10px', color: '#505050' }}>{t('library.pages')}</span>
                     <span style={{ fontSize: '11px', color: '#686868' }}>
-                      {selectedBook.totalPages > 0 ? `${selectedBook.totalPages} pages` : '-'}
+                      {selectedBook.totalPages > 0 ? `${selectedBook.totalPages} ${t('library.page')}` : '-'}
                     </span>
                   </div>
                   {/* Chapters */}
                   <div className="flex items-center">
-                    <span className="w-20 font-bold" style={{ fontSize: '10px', color: '#505050' }}>Chapters</span>
+                    <span className="w-20 font-bold" style={{ fontSize: '10px', color: '#505050' }}>{t('library.chapters')}</span>
                     <span style={{ fontSize: '11px', color: '#686868' }}>
-                      {selectedBook.chapterCount > 0 ? `${selectedBook.chapterCount} chapters` : '-'}
+                      {selectedBook.chapterCount > 0 ? `${selectedBook.chapterCount} ${t('library.chapter')}` : '-'}
                     </span>
                   </div>
                   {/* Word Count */}
                   <div className="flex items-center">
-                    <span className="w-20 font-bold" style={{ fontSize: '10px', color: '#505050' }}>Word Count</span>
+                    <span className="w-20 font-bold" style={{ fontSize: '10px', color: '#505050' }}>{t('library.wordCount')}</span>
                     <span style={{ fontSize: '11px', color: '#686868' }}>
-                      {selectedBook.wordCount > 0 ? `${selectedBook.wordCount.toLocaleString()} words` : '-'}
+                      {selectedBook.wordCount > 0 ? `${selectedBook.wordCount.toLocaleString()} 字` : '-'}
                     </span>
                   </div>
                   {/* File Size */}
                   <div className="flex items-center">
-                    <span className="w-20 font-bold" style={{ fontSize: '10px', color: '#505050' }}>File Size</span>
+                    <span className="w-20 font-bold" style={{ fontSize: '10px', color: '#505050' }}>{t('library.fileSize')}</span>
                     <span style={{ fontSize: '11px', color: '#686868' }}>
                       {selectedBook.fileSizeText || '-'}
                     </span>
                   </div>
                   {/* Progress */}
                   <div className="flex items-center">
-                    <span className="w-20 font-bold" style={{ fontSize: '10px', color: '#505050' }}>Progress</span>
+                    <span className="w-20 font-bold" style={{ fontSize: '10px', color: '#505050' }}>{t('library.progress')}</span>
                     <span style={{ fontSize: '11px', color: '#686868' }}>
                       {selectedBook.currentPage > 0
-                        ? `Page ${selectedBook.currentPage}`
-                        : 'Not read'}
+                        ? t('library.currentPage', {0: selectedBook.currentPage})
+                        : t('library.notRead')}
                     </span>
                   </div>
                   {/* Progress bar */}
@@ -1588,7 +1613,7 @@ function LibraryView() {
                           : '0%'}
                       </span>
                       <span style={{ fontSize: '10px', color: '#686868' }}>
-                        {selectedBook.totalPages > 0 ? `${selectedBook.totalPages} pages` : '-'}
+                        {selectedBook.totalPages > 0 ? `${selectedBook.totalPages} ${t('library.page')}` : '-'}
                       </span>
                     </div>
                     <div className="w-full overflow-hidden" style={{ height: '3px', backgroundColor: '#333333', borderRadius: '1.5px' }}>
@@ -1602,7 +1627,7 @@ function LibraryView() {
                   <div className="w-full" style={{ height: '1px', backgroundColor: '#2E2E2E' }} />
                   {/* Date Added */}
                   <div className="flex items-center">
-                    <span className="w-20 font-bold" style={{ fontSize: '10px', color: '#505050' }}>Date Added</span>
+                    <span className="w-20 font-bold" style={{ fontSize: '10px', color: '#505050' }}>{t('library.dateAdded')}</span>
                     <span style={{ fontSize: '11px', color: '#686868' }}>
                       {selectedBook.addedDate
                         ? new Date(selectedBook.addedDate).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
@@ -1611,18 +1636,18 @@ function LibraryView() {
                   </div>
                   {/* Last Read */}
                   <div className="flex items-center">
-                    <span className="w-20 font-bold" style={{ fontSize: '10px', color: '#505050' }}>Last Read</span>
+                    <span className="w-20 font-bold" style={{ fontSize: '10px', color: '#505050' }}>{t('library.lastRead')}</span>
                     <span style={{ fontSize: '11px', color: '#686868' }}>
                       {selectedBook.lastOpened
                         ? new Date(selectedBook.lastOpened).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-                        : 'Not read'}
+                        : t('library.notRead')}
                     </span>
                   </div>
                   {/* Divider */}
                   <div className="w-full" style={{ height: '1px', backgroundColor: '#2E2E2E' }} />
                   {/* Path */}
                   <div className="flex items-start">
-                    <span className="w-20 font-bold flex-shrink-0" style={{ fontSize: '10px', color: '#505050' }}>Path</span>
+                    <span className="w-20 font-bold flex-shrink-0" style={{ fontSize: '10px', color: '#505050' }}>{t('library.path')}</span>
                     <span className="truncate" title={selectedBook.path} style={{ fontSize: '11px', color: '#686868' }}>
                       {selectedBook.path}
                     </span>
@@ -1637,7 +1662,7 @@ function LibraryView() {
                   className="flex-1 py-1.5 bg-accent hover:bg-accent-hover rounded text-accent-text text-xs font-medium flex items-center justify-center gap-1.5 transition-colors"
                 >
                   <RxReader className="w-3.5 h-3.5" />
-                  Read
+                  {t('library.read')}
                 </button>
                 <button
                   onClick={() => toggleFavorite(selectedBook)}
@@ -1660,7 +1685,7 @@ function LibraryView() {
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="font-medium flex items-center gap-1" style={{ fontSize: '11px', color: '#909090' }}>
                     <HiTag className="w-3.5 h-3.5" />
-                    Tags
+                    {t('library.tags')}
                   </h4>
                   {!showTagInput ? (
                     <button
@@ -1678,7 +1703,7 @@ function LibraryView() {
                       type="text"
                       value={newTagName}
                       onChange={(e) => setNewTagName(e.target.value)}
-                      placeholder="Tag name"
+                      placeholder={t('library.tagName')}
                       className="flex-1 px-2 py-1 bg-bg-input border border-border-1 rounded text-xs text-text-primary placeholder-text-muted focus:outline-none focus:border-accent"
                       autoFocus
                       onKeyDown={(e) => e.key === 'Enter' && handleAddTag()}
@@ -1687,7 +1712,7 @@ function LibraryView() {
                       onClick={handleAddTag}
                       className="px-2 py-1 bg-accent hover:bg-accent-hover rounded text-accent-text text-xs transition-colors"
                     >
-                      Add
+                      {t('library.addTag')}
                     </button>
                     <button
                       onClick={() => {
@@ -1720,7 +1745,7 @@ function LibraryView() {
                       </span>
                     ))
                   ) : (
-                    <p style={{ fontSize: '11px', color: '#555555' }}>No tags</p>
+                    <p style={{ fontSize: '11px', color: '#555555' }}>{t('library.noTags')}</p>
                   )}
                 </div>
               </div>
@@ -1730,7 +1755,7 @@ function LibraryView() {
           <div className="flex-shrink-0 border-l border-border-1 flex items-center justify-center" style={{ width: rightPanelWidth, backgroundColor: '#212121', borderRadius: '0 0 8px 0' }}>
             <div className="text-center p-4">
               <HiBookOpen className="w-12 h-12 mx-auto mb-3 text-text-muted opacity-30" />
-              <p style={{ fontSize: '12px', color: '#505050' }}>Select a book to view details</p>
+              <p style={{ fontSize: '12px', color: '#505050' }}>{t('library.selectBookHint')}</p>
             </div>
           </div>
         )}
@@ -1738,7 +1763,7 @@ function LibraryView() {
         {/* Status Toast */}
         {statusMessage && (
           <div className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-50 border rounded-lg shadow-xl px-4 py-2 text-sm max-w-md ${
-            statusMessage.includes('failed') || statusMessage.includes('Failed')
+            statusMessage.includes('Failed') || statusMessage.includes('failed') || statusMessage.includes('失败')
               ? 'bg-red-900/90 border-red-700 text-red-100'
               : 'bg-bg-card border-border-1 text-text-primary'
           }`}>
@@ -1756,28 +1781,28 @@ function LibraryView() {
         {showConflictDialog && (
           <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
             <div className="bg-bg-panel border border-border-1 rounded-lg shadow-xl p-6 max-w-sm w-full mx-4">
-              <h3 className="text-sm font-medium text-text-primary mb-3">File Name Conflict</h3>
+              <h3 className="text-sm font-medium text-text-primary mb-3">{t('library.fileNameConflict')}</h3>
               <p className="text-text-secondary text-xs mb-2">
-                A file with the same name already exists in the target folder:
+                {t('library.conflictExists')}
               </p>
               <p className="text-accent text-xs mb-2 font-mono bg-bg-input px-2 py-1 rounded">
                 {conflictFileName}
               </p>
               <p className="text-text-muted text-xs mb-4">
-                Import with an auto-generated suffix (e.g. _1, _2)?
+                {t('library.useSuffixImport')}
               </p>
               <div className="flex gap-2 justify-end">
                 <button
                   onClick={handleCancelCopy}
                   className="px-3 py-1.5 bg-bg-hover hover:bg-border-1 rounded text-text-secondary text-xs transition-colors"
                 >
-                  Cancel
+                  {t('library.cancel')}
                 </button>
                 <button
                   onClick={handleConfirmCopyWithSuffix}
                   className="px-3 py-1.5 bg-accent hover:bg-accent-hover rounded text-accent-text text-xs transition-colors"
                 >
-                  Import with Suffix
+                  {t('library.useSuffixImportBtn')}
                 </button>
               </div>
             </div>
