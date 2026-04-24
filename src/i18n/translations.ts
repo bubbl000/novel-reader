@@ -107,6 +107,7 @@ export const translations = {
     bookmarkAdded: { zh: '书签已添加：{0}', en: 'Bookmark added: {0}' },
     bookmarkAddFailed: { zh: '添加书签失败', en: 'Failed to add bookmark' },
     bookmarkDeleted: { zh: '书签已删除', en: 'Bookmark deleted' },
+    bookmarkAlreadyExists: { zh: '此页已有书签', en: 'Bookmark already exists on this page' },
     highlightAndNotes: { zh: '高亮与笔记', en: 'Highlights & Notes' },
     noHighlights: { zh: '暂无高亮，选中文本后可高亮', en: 'No highlights. Select text to highlight' },
     highlight: { zh: '高亮', en: 'Highlight' },

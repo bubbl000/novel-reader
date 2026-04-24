@@ -661,33 +661,6 @@ function ReaderView() {
   // Close window (auto-save progress)
   // =========================================================================
 
-  const handleClose = useCallback(async () => {
-    try {
-      if (bookId && effectiveTotalPages > 0) {
-        await databaseService.saveReadingProgress(
-          bookId,
-          currentPage,
-          effectiveTotalPages,
-          currentChapter ?? undefined,
-        )
-      }
-      if (sessionId) {
-        const pagesRead = Math.abs(currentPage - sessionStartPageRef.current)
-        await databaseService.endReadingSession(sessionId, pagesRead)
-      }
-      const currentWindow = getCurrentWindow()
-      await currentWindow.destroy()
-    } catch (err) {
-      console.error('Close window error:', err)
-      try {
-        const currentWindow = getCurrentWindow()
-        await currentWindow.close()
-      } catch (fallbackErr) {
-        console.error('Fallback close error:', fallbackErr)
-      }
-    }
-  }, [bookId, currentPage, effectiveTotalPages, currentChapter, sessionId])
-
   // =========================================================================
   // Bookmarks: load, add, delete
   // =========================================================================
@@ -708,9 +681,14 @@ function ReaderView() {
 
   const handleAddBookmark = useCallback(async () => {
     if (!bookId) return
+    const offset = currentPage
+    const existingBookmark = bookmarks.find(bm => bm.offset === offset && bm.chapter_id === (currentChapter ?? null))
+    if (existingBookmark) {
+      showNotification(t('reader.bookmarkAlreadyExists'))
+      return
+    }
     try {
       const title = t('reader.pageDash', {0: currentPage})
-      const offset = currentPage
       await databaseService.addBookmark(bookId, currentChapter ?? null, offset, title)
       await loadBookmarks()
       showNotification(t('reader.bookmarkAdded', {0: title}))
@@ -718,7 +696,7 @@ function ReaderView() {
       console.error('Add bookmark error:', err)
       showNotification(t('reader.bookmarkAddFailed'))
     }
-  }, [bookId, currentPage, currentChapter, loadBookmarks, showNotification, t])
+  }, [bookId, currentPage, currentChapter, bookmarks, loadBookmarks, showNotification, t])
 
   const handleDeleteBookmark = useCallback(async (bookmarkId: number) => {
     try {
@@ -1486,19 +1464,6 @@ function ReaderView() {
             <RxMagnifyingGlass className="w-4 h-4" />
           </button>
 
-          {/* Bookmark button */}
-          <button
-            onClick={(e) => { e.stopPropagation(); handleAddBookmark() }}
-            className={`px-2 py-1 rounded text-sm transition-colors ${
-              isBookmarked
-                ? 'text-accent'
-                : 'bg-bg-hover hover:bg-toolbar-hover text-text-primary'
-            }`}
-            title={t('reader.addBookmark')}
-          >
-            {isBookmarked ? <RxBookmarkFilled className="w-4 h-4" /> : <RxBookmark className="w-4 h-4" />}
-          </button>
-
           {/* Bookmark panel toggle */}
           <button
             onClick={(e) => {
@@ -1626,15 +1591,6 @@ function ReaderView() {
             </button>
           )}
 
-          {/* Close */}
-          <button
-            onClick={(e) => { e.stopPropagation(); handleClose() }}
-            className="px-2 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary"
-            title={t('reader.close')}
-            aria-label={t('reader.closeReader')}
-          >
-            <RxCross2 className="w-4 h-4" />
-          </button>
         </div>
       </div>
 
@@ -1908,7 +1864,21 @@ function ReaderView() {
               }}
             />
             <div className="p-2 border-b border-border-1 flex items-center justify-between">
-              <span className="text-text-primary text-xs font-medium">{t('reader.bookmarks')}</span>
+              <div className="flex items-center gap-2">
+                <span className="text-text-primary text-xs font-medium">{t('reader.bookmarks')}</span>
+                <button
+                  onClick={handleAddBookmark}
+                  className={`p-1 rounded transition-colors ${
+                    isBookmarked
+                      ? 'text-accent'
+                      : 'text-text-muted hover:text-accent hover:bg-bg-hover'
+                  }`}
+                  title={t('reader.addBookmark')}
+                  aria-label={t('reader.addBookmark')}
+                >
+                  {isBookmarked ? <RxBookmarkFilled className="w-3.5 h-3.5" /> : <RxBookmark className="w-3.5 h-3.5" />}
+                </button>
+              </div>
               <button
                 onClick={() => setShowBookmarkPanel(false)}
                 className="text-text-muted hover:text-text-primary"
