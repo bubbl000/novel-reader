@@ -16,7 +16,7 @@ import {
 // Type definitions
 // ---------------------------------------------------------------------------
 
-type ReadMode = 'paginated' | 'scroll'
+type ReadMode = 'scroll' | 'single' | 'spread'
 type ThemeMode = 'dark' | 'light' | 'sepia'
 
 interface ThemeColors {
@@ -182,7 +182,7 @@ function ReaderView() {
   const [error, setError] = useState<string | null>(null)
 
   // ---- Reading settings ----
-  const [readMode, setReadMode] = useState<ReadMode>('paginated')
+  const [readMode, setReadMode] = useState<ReadMode>('single')
   const [theme, setTheme] = useState<ThemeMode>('dark')
   const [fontSize, setFontSize] = useState(18)
   const [lineHeight, setLineHeight] = useState(1.8)
@@ -207,6 +207,10 @@ function ReaderView() {
   const [sidebarWidth, setSidebarWidth] = useState(280)
   const [isResizingSidebar, setIsResizingSidebar] = useState(false)
   const sidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
+
+  // ---- Scroll mode: chapter lazy loading ----
+  const [loadedChapterNumbers, setLoadedChapterNumbers] = useState<Set<number>>(new Set())
+  const scrollChapterCacheRef = useRef<Map<number, string>>(new Map())
 
   // ---- Auto-save progress ----
   const autoSaveTimerRef = useRef<number | null>(null)
@@ -257,6 +261,13 @@ function ReaderView() {
   // ---- Derived: TXT pages ----
   const charsPerPage = Math.round(CHARS_PER_PAGE_BASE * (18 / fontSize))
   const txtPages = splitTextIntoPages(txtText, charsPerPage)
+
+  // ---- Derived: chapters ----
+  const chapters = sourceType === 'txt'
+    ? txtChapters
+    : sourceType === 'md'
+      ? mdChapters
+      : []
 
   // ---- Derived: effective total pages ----
   const effectiveTotalPages = totalPages
@@ -353,7 +364,7 @@ function ReaderView() {
 
   useEffect(() => {
     if (sourceType !== 'md') return
-    if (readMode !== 'paginated') return
+    if (readMode === 'scroll') return
     if (!contentRef.current) return
 
     const measure = () => {
@@ -394,7 +405,7 @@ function ReaderView() {
   // =========================================================================
 
   useEffect(() => {
-    if (sourceType !== 'md' || readMode !== 'paginated') return
+    if (sourceType !== 'md' || readMode === 'scroll') return
     const container = contentRef.current
     if (!container) return
     const viewportHeight = container.clientHeight
@@ -479,7 +490,7 @@ function ReaderView() {
   // =========================================================================
 
   useEffect(() => {
-    if (readMode !== 'paginated') return
+    if (readMode === 'scroll') return
     let wheelTimer: number | null = null
     const WHEEL_THROTTLE_MS = 300
 
@@ -499,8 +510,69 @@ function ReaderView() {
   }, [readMode, goNext, goPrev])
 
   // =========================================================================
-  // Scroll mode: track scroll percentage
+  // Scroll mode: track scroll percentage + chapter lazy loading
   // =========================================================================
+
+  const getChapterText = useCallback((chapterNumber: number): string | null => {
+    if (sourceType === 'txt') {
+      const chapter = txtChapters.find(c => c.chapter_number === chapterNumber)
+      if (!chapter) return null
+      return txtText.substring(chapter.start_offset, chapter.end_offset)
+    }
+    if (sourceType === 'pdf') {
+      const pagesPerChapter = Math.ceil(pdfPages.length / Math.max(1, chapters.length))
+      const startPage = (chapterNumber - 1) * pagesPerChapter
+      const endPage = Math.min(chapterNumber * pagesPerChapter, pdfPages.length)
+      return pdfPages.slice(startPage, endPage).map(p => p.text || '').join('\n\n')
+    }
+    return null
+  }, [sourceType, txtChapters, txtText, pdfPages, chapters.length])
+
+  useEffect(() => {
+    if (readMode !== 'scroll' || sourceType === 'md') return
+    if (chapters.length === 0) {
+      const chapterNums = new Set([1])
+      setLoadedChapterNumbers(chapterNums)
+      scrollChapterCacheRef.current.clear()
+      if (sourceType === 'txt') {
+        scrollChapterCacheRef.current.set(1, txtText)
+      } else if (sourceType === 'pdf') {
+        scrollChapterCacheRef.current.set(1, pdfPages.map(p => p.text || '').join('\n\n'))
+      }
+      return
+    }
+    const initial = new Set([1])
+    setLoadedChapterNumbers(initial)
+    scrollChapterCacheRef.current.clear()
+    const text = getChapterText(1)
+    if (text !== null) scrollChapterCacheRef.current.set(1, text)
+  }, [readMode, sourceType, chapters.length, txtChapters, txtText, pdfPages, getChapterText])
+
+  const loadNextChapter = useCallback(() => {
+    if (sourceType === 'md') return
+    const loadedArr = Array.from(loadedChapterNumbers).sort((a, b) => a - b)
+    const lastLoaded = loadedArr[loadedArr.length - 1] || 0
+    const maxChapter = chapters.length > 0 ? chapters.length : 1
+    if (lastLoaded >= maxChapter) return
+    const nextChapter = lastLoaded + 1
+    const text = getChapterText(nextChapter)
+    if (text === null) return
+
+    const newCache = new Map(scrollChapterCacheRef.current)
+    newCache.set(nextChapter, text)
+    const newLoaded = new Set(loadedChapterNumbers)
+    newLoaded.add(nextChapter)
+
+    while (newLoaded.size > 3) {
+      const sorted = Array.from(newLoaded).sort((a, b) => a - b)
+      const oldest = sorted[0]
+      newLoaded.delete(oldest)
+      newCache.delete(oldest)
+    }
+
+    scrollChapterCacheRef.current = newCache
+    setLoadedChapterNumbers(newLoaded)
+  }, [loadedChapterNumbers, chapters.length, sourceType, getChapterText])
 
   const handleScroll = useCallback(() => {
     const container = scrollContainerRef.current
@@ -509,7 +581,11 @@ function ReaderView() {
     const maxScroll = scrollHeight - clientHeight
     const percentage = maxScroll > 0 ? Math.round((scrollTop / maxScroll) * 100) : 0
     setScrollPercentage(percentage)
-  }, [])
+
+    if (percentage >= 80) {
+      loadNextChapter()
+    }
+  }, [loadNextChapter])
 
   const scrollThrottleRef = useRef<number | null>(null)
   const handleScrollThrottled = useCallback(() => {
@@ -1064,12 +1140,6 @@ function ReaderView() {
     ? txtPages[Math.min(currentPage - 1, txtPages.length - 1)] || ''
     : ''
 
-  const chapters = sourceType === 'txt'
-    ? txtChapters
-    : sourceType === 'md'
-      ? mdChapters
-      : []
-
   // ---- Chapter navigation helpers (for left/right buttons) ----
   const goPrevChapter = () => {
     if (chapters.length === 0) {
@@ -1276,6 +1346,7 @@ function ReaderView() {
 
     // ---- Scroll mode ----
     if (readMode === 'scroll') {
+      const sortedChapters = Array.from(loadedChapterNumbers).sort((a, b) => a - b)
       return (
         <div className="flex-1 relative" style={{ backgroundColor: themeColors.bg }}>
           <div
@@ -1292,32 +1363,82 @@ function ReaderView() {
                 ...contentStyle,
               }}
             >
-              {sourceType === 'pdf' && pdfPages.map(page => (
-                <div key={page.page_number} style={{ marginBottom: '2em' }}>
-                  <div style={{
-                    color: themeColors.secondary,
-                    fontSize: '12px',
-                    marginBottom: '8px',
-                    textAlign: 'center',
-                    opacity: 0.6,
-                  }}>
-                    — {t('reader.pageDash', {0: page.page_number})} —
+              {sourceType === 'pdf' && (chapters.length === 0 ? (
+                pdfPages.map(page => (
+                  <div key={page.page_number} style={{ marginBottom: '2em' }}>
+                    <div style={{
+                      color: themeColors.secondary,
+                      fontSize: '12px',
+                      marginBottom: '8px',
+                      textAlign: 'center',
+                      opacity: 0.6,
+                    }}>
+                      — {t('reader.pageDash', {0: page.page_number})} —
+                    </div>
+                    <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                      {highlights.length > 0 || searchQuery
+                        ? renderAnnotatedText(page.text || t('reader.noTextOnPage'), page.page_number)
+                        : (page.text || t('reader.noTextOnPage'))}
+                    </div>
                   </div>
-                  <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                    {highlights.length > 0 || searchQuery
-                      ? renderAnnotatedText(page.text || t('reader.noTextOnPage'), page.page_number)
-                      : (page.text || t('reader.noTextOnPage'))}
-                  </div>
-                </div>
+                ))
+              ) : (
+                sortedChapters.map(chNum => {
+                  const chapter = chapters.find(c => c.chapter_number === chNum)
+                  const text = scrollChapterCacheRef.current.get(chNum) || ''
+                  return (
+                    <div key={chNum} style={{ marginBottom: '2em' }}>
+                      {chapter && (
+                        <div style={{
+                          color: themeColors.secondary,
+                          fontSize: '14px',
+                          fontWeight: 600,
+                          marginBottom: '12px',
+                          paddingBottom: '8px',
+                          borderBottom: `1px solid ${themeColors.border}`,
+                        }}>
+                          {chapter.title}
+                        </div>
+                      )}
+                      <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                        {highlights.length > 0 || searchQuery ? renderAnnotatedText(text, chNum) : text}
+                      </div>
+                    </div>
+                  )
+                })
               ))}
 
-              {sourceType === 'txt' && (
+              {sourceType === 'txt' && (chapters.length === 0 ? (
                 <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                   {highlights.length > 0 || searchQuery
                     ? renderAnnotatedText(txtText, currentPage)
                     : txtText}
                 </div>
-              )}
+              ) : (
+                sortedChapters.map(chNum => {
+                  const chapter = chapters.find(c => c.chapter_number === chNum)
+                  const text = scrollChapterCacheRef.current.get(chNum) || ''
+                  return (
+                    <div key={chNum} style={{ marginBottom: '2em' }}>
+                      {chapter && (
+                        <div style={{
+                          color: themeColors.secondary,
+                          fontSize: '14px',
+                          fontWeight: 600,
+                          marginBottom: '12px',
+                          paddingBottom: '8px',
+                          borderBottom: `1px solid ${themeColors.border}`,
+                        }}>
+                          {chapter.title}
+                        </div>
+                      )}
+                      <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                        {highlights.length > 0 || searchQuery ? renderAnnotatedText(text, chNum) : text}
+                      </div>
+                    </div>
+                  )
+                })
+              ))}
 
               {sourceType === 'md' && (
                 <div
@@ -1334,7 +1455,6 @@ function ReaderView() {
             </div>
           </div>
 
-          {/* Scroll-to-top button - outside scroll container */}
           <button
             onClick={(e) => {
               e.stopPropagation()
@@ -1349,74 +1469,176 @@ function ReaderView() {
       )
     }
 
-    // ---- Paginated mode ----
-    return (
-      <div
-        className="flex-1 flex items-center justify-center relative group"
-        style={{ backgroundColor: themeColors.bg }}
-        onMouseUp={handleMouseUp}
-      >
+    // ---- Single page mode ----
+    if (readMode === 'single') {
+      return (
         <div
-          ref={contentRef}
-          className="overflow-hidden"
-          style={{
-            maxWidth: '800px',
-            width: '100%',
-            height: '100%',
-            padding: '32px 40px',
-            ...contentStyle,
-            overflowY: sourceType === 'md' ? 'hidden' : undefined,
-          }}
+          className="flex-1 flex items-center justify-center relative group"
+          style={{ backgroundColor: themeColors.bg }}
+          onMouseUp={handleMouseUp}
         >
-          {sourceType === 'pdf' && (
-            <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-              {renderAnnotatedText(currentPdfPageText || t('reader.noTextOnPage'), currentPage)}
-            </div>
-          )}
+          <div
+            ref={contentRef}
+            className="overflow-hidden"
+            style={{
+              maxWidth: '800px',
+              width: '100%',
+              height: '100%',
+              padding: '32px 40px',
+              ...contentStyle,
+              overflowY: sourceType === 'md' ? 'hidden' : undefined,
+            }}
+          >
+            {sourceType === 'pdf' && (
+              <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {renderAnnotatedText(currentPdfPageText || t('reader.noTextOnPage'), currentPage)}
+              </div>
+            )}
 
-          {sourceType === 'txt' && (
-            <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-              {renderAnnotatedText(currentTxtPageText || t('reader.blankPage'), currentPage)}
-            </div>
-          )}
+            {sourceType === 'txt' && (
+              <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {renderAnnotatedText(currentTxtPageText || t('reader.blankPage'), currentPage)}
+              </div>
+            )}
 
-          {sourceType === 'md' && (
-            <div
-              className="novel-md-content"
-              style={{
-                '--md-code-bg': themeColors.codeBg,
-                '--md-quote-border': themeColors.quoteBorder,
-                '--md-link': themeColors.linkColor,
-                '--md-border': themeColors.border,
-              } as React.CSSProperties}
-              dangerouslySetInnerHTML={{ __html: mdHtml }}
-            />
-          )}
+            {sourceType === 'md' && (
+              <div
+                className="novel-md-content"
+                style={{
+                  '--md-code-bg': themeColors.codeBg,
+                  '--md-quote-border': themeColors.quoteBorder,
+                  '--md-link': themeColors.linkColor,
+                  '--md-border': themeColors.border,
+                } as React.CSSProperties}
+                dangerouslySetInnerHTML={{ __html: mdHtml }}
+              />
+            )}
+          </div>
+
+          <button
+            onClick={chapters.length > 0 ? goPrevChapter : goPrev}
+            disabled={chapters.length > 0 ? (currentChapter ?? 1) <= 1 : currentPage <= 1}
+            className="absolute left-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
+            title={chapters.length > 0 ? t('reader.previousChapter') : t('reader.previousPage')}
+            aria-label={chapters.length > 0 ? t('reader.previousChapter') : t('reader.previousPage')}
+          >
+            <RxChevronLeft className="w-6 h-6" />
+          </button>
+
+          <button
+            onClick={chapters.length > 0 ? goNextChapter : goNext}
+            disabled={chapters.length > 0 ? (currentChapter ?? 1) >= chapters.length : currentPage >= effectiveTotalPages}
+            className="absolute right-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
+            title={chapters.length > 0 ? t('reader.nextChapter') : t('reader.nextPage')}
+            aria-label={chapters.length > 0 ? t('reader.nextChapter') : t('reader.nextPage')}
+          >
+            <RxChevronRight className="w-6 h-6" />
+          </button>
         </div>
+      )
+    }
 
-        {/* Previous chapter/page button */}
-        <button
-          onClick={chapters.length > 0 ? goPrevChapter : goPrev}
-          disabled={chapters.length > 0 ? (currentChapter ?? 1) <= 1 : currentPage <= 1}
-          className="absolute left-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
-          title={chapters.length > 0 ? t('reader.previousChapter') : t('reader.previousPage')}
-          aria-label={chapters.length > 0 ? t('reader.previousChapter') : t('reader.previousPage')}
-        >
-          <RxChevronLeft className="w-6 h-6" />
-        </button>
+    // ---- Spread (double page) mode ----
+    if (readMode === 'spread') {
+      const leftPage = currentPage
+      const rightPage = Math.min(currentPage + 1, effectiveTotalPages)
+      const isSingleRender = leftPage === rightPage
 
-        {/* Next chapter/page button */}
-        <button
-          onClick={chapters.length > 0 ? goNextChapter : goNext}
-          disabled={chapters.length > 0 ? (currentChapter ?? 1) >= chapters.length : currentPage >= effectiveTotalPages}
-          className="absolute right-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
-          title={chapters.length > 0 ? t('reader.nextChapter') : t('reader.nextPage')}
-          aria-label={chapters.length > 0 ? t('reader.nextChapter') : t('reader.nextPage')}
+      const getTxtPageText = (page: number) => {
+        if (page < 1 || page > txtPages.length) return ''
+        return txtPages[page - 1]
+      }
+      const getPdfPageText = (page: number) => {
+        if (page < 1 || page > pdfPages.length) return ''
+        return pdfPages[page - 1].text || ''
+      }
+
+      return (
+        <div
+          className="flex-1 flex items-center justify-center relative group"
+          style={{ backgroundColor: themeColors.bg }}
+          onMouseUp={handleMouseUp}
         >
-          <RxChevronRight className="w-6 h-6" />
-        </button>
-      </div>
-    )
+          <div
+            className="flex gap-6 overflow-hidden"
+            style={{
+              maxWidth: '1400px',
+              width: '100%',
+              height: '100%',
+              padding: '32px 24px',
+            }}
+          >
+            {/* Left page */}
+            <div
+              className="flex-1 overflow-hidden"
+              style={{ ...contentStyle, overflowY: sourceType === 'md' ? 'hidden' : undefined }}
+            >
+              {sourceType === 'pdf' && (
+                <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  {renderAnnotatedText(getPdfPageText(leftPage) || t('reader.noTextOnPage'), leftPage)}
+                </div>
+              )}
+              {sourceType === 'txt' && (
+                <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  {renderAnnotatedText(getTxtPageText(leftPage) || t('reader.blankPage'), leftPage)}
+                </div>
+              )}
+              {sourceType === 'md' && leftPage === currentPage && (
+                <div
+                  className="novel-md-content"
+                  style={{
+                    '--md-code-bg': themeColors.codeBg,
+                    '--md-quote-border': themeColors.quoteBorder,
+                    '--md-link': themeColors.linkColor,
+                    '--md-border': themeColors.border,
+                  } as React.CSSProperties}
+                  dangerouslySetInnerHTML={{ __html: mdHtml }}
+                />
+              )}
+            </div>
+
+            {/* Right page */}
+            {!isSingleRender && (
+              <div
+                className="flex-1 overflow-hidden"
+                style={{ ...contentStyle, borderLeft: `1px solid ${themeColors.border}`, paddingLeft: '24px' }}
+              >
+                {sourceType === 'pdf' && (
+                  <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                    {renderAnnotatedText(getPdfPageText(rightPage) || t('reader.noTextOnPage'), rightPage)}
+                  </div>
+                )}
+                {sourceType === 'txt' && (
+                  <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                    {renderAnnotatedText(getTxtPageText(rightPage) || t('reader.blankPage'), rightPage)}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={() => goPrev()}
+            disabled={currentPage <= 1}
+            className="absolute left-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
+            title={t('reader.previousPage')}
+            aria-label={t('reader.previousPage')}
+          >
+            <RxChevronLeft className="w-6 h-6" />
+          </button>
+
+          <button
+            onClick={() => goNext()}
+            disabled={currentPage >= effectiveTotalPages}
+            className="absolute right-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
+            title={t('reader.nextPage')}
+            aria-label={t('reader.nextPage')}
+          >
+            <RxChevronRight className="w-6 h-6" />
+          </button>
+        </div>
+      )
+    }
   }
 
   // =========================================================================
@@ -1498,22 +1720,31 @@ function ReaderView() {
             <RxPencil1 className="w-4 h-4" />
           </button>
 
-          {/* Read mode toggle */}
-          <button
-            onClick={(e) => {
-              e.stopPropagation()
-              e.preventDefault()
-              setReadMode(readMode === 'paginated' ? 'scroll' : 'paginated')
-            }}
-            className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-              readMode === 'scroll'
-                ? 'bg-accent text-accent-text'
-                : 'bg-bg-input text-text-secondary border border-border-1 hover:text-text-primary'
-            }`}
-            title={readMode === 'paginated' ? t('reader.switchToScroll') : t('reader.switchToPaginated')}
-          >
-            {readMode === 'paginated' ? t('reader.paginated') : t('reader.scroll')}
-          </button>
+          {/* Read mode buttons */}
+          <div className="flex items-center gap-1 bg-bg-input border border-border-1 rounded px-1 py-0.5">
+            {(['scroll', 'single', 'spread'] as ReadMode[]).map(mode => (
+              <button
+                key={mode}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  e.preventDefault()
+                  setReadMode(mode)
+                }}
+                className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
+                  readMode === mode
+                    ? 'bg-accent text-accent-text'
+                    : 'text-text-secondary hover:text-text-primary'
+                }`}
+                title={
+                  mode === 'scroll' ? t('reader.scrollMode')
+                  : mode === 'single' ? t('reader.singlePageMode')
+                  : t('reader.spreadMode')
+                }
+              >
+                {mode === 'scroll' ? t('reader.scroll') : mode === 'single' ? t('reader.singlePage') : t('reader.spread')}
+              </button>
+            ))}
+          </div>
 
           {/* Font size slider */}
           <div className="flex items-center gap-2 bg-bg-input border border-border-1 rounded px-2 py-1">
@@ -1868,15 +2099,15 @@ function ReaderView() {
                 <span className="text-text-primary text-xs font-medium">{t('reader.bookmarks')}</span>
                 <button
                   onClick={handleAddBookmark}
-                  className={`p-1 rounded transition-colors ${
+                  className={`px-2 py-0.5 rounded text-xs transition-colors ${
                     isBookmarked
-                      ? 'text-accent'
-                      : 'text-text-muted hover:text-accent hover:bg-bg-hover'
+                      ? 'bg-accent/20 text-accent'
+                      : 'text-text-muted hover:text-accent hover:bg-bg-hover border border-border-1'
                   }`}
                   title={t('reader.addBookmark')}
                   aria-label={t('reader.addBookmark')}
                 >
-                  {isBookmarked ? <RxBookmarkFilled className="w-3.5 h-3.5" /> : <RxBookmark className="w-3.5 h-3.5" />}
+                  {t('reader.addBookmark')}
                 </button>
               </div>
               <button
@@ -2005,7 +2236,7 @@ function ReaderView() {
       >
         <div className="flex-1 px-3 flex items-center gap-2">
           <span style={{ fontSize: '11px', color: '#505050' }}>
-            {readMode === 'scroll' ? t('reader.scrollMode') : t('reader.paginatedMode')}
+            {readMode === 'scroll' ? t('reader.scrollMode') : readMode === 'single' ? t('reader.singlePageMode') : t('reader.spreadMode')}
           </span>
         </div>
         <div className="flex items-center gap-3">
@@ -2041,8 +2272,8 @@ function ReaderView() {
         </div>
       </div>
 
-      {/* ---- Page slider (paginated mode only) ---- */}
-      {readMode === 'paginated' && effectiveTotalPages > 1 && (
+      {/* ---- Page slider (single/spread mode only) ---- */}
+      {(readMode === 'single' || readMode === 'spread') && effectiveTotalPages > 1 && (
         <div
           className="flex-shrink-0 flex items-center gap-3 px-3 select-none"
           style={{ height: '32px', backgroundColor: '#212121', borderTop: '1px solid #2E2E2E' }}
