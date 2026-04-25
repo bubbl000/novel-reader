@@ -14,6 +14,7 @@ import {
   RxStarFilled,
   RxFileText,
   RxFile,
+  RxPencil1,
 } from 'react-icons/rx'
 import { HiFunnel, HiTag, HiOutlineTag, HiBookOpen } from 'react-icons/hi2'
 import { invoke } from '@tauri-apps/api/core'
@@ -85,7 +86,7 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
   const handleDeleteClick = async () => {
     setContextMenu(null)
     try {
-      const count = await invoke<number>('count_manga_in_folder', { folderPath: node.path })
+      const count = await invoke<number>('count_books_in_folder', { folderPath: node.path })
       setDeleteBookCount(count)
       setShowDeleteConfirm(true)
     } catch (err) {
@@ -1528,14 +1529,48 @@ function LibraryView() {
 
               {/* Title */}
               <div className="px-4 pb-3">
-                <h2 className="font-medium truncate" title={selectedBook.title} style={{ fontSize: '13px', color: '#E0E0E0' }}>
-                  {selectedBook.title}
-                </h2>
-                {selectedBook.author && (
-                  <p className="truncate mt-0.5" style={{ fontSize: '11px', color: '#909090' }}>
-                    {selectedBook.author}
-                  </p>
-                )}
+                <div className="flex items-center gap-1.5">
+                  <h2 className="font-medium truncate flex-1" title={selectedBook.title} style={{ fontSize: '13px', color: '#E0E0E0' }}>
+                    {selectedBook.title}
+                  </h2>
+                  <button
+                    onClick={async () => {
+                      const newTitle = prompt(t('library.editTitle'), selectedBook.title)
+                      if (newTitle && newTitle !== selectedBook.title) {
+                        try {
+                          await invoke('save_book_metadata', { book: { ...selectedBook, title: newTitle } })
+                          useMangaStore.getState().scanAndLoad()
+                        } catch { /* ignore */ }
+                      }
+                    }}
+                    className="text-text-muted hover:text-accent transition-colors flex-shrink-0"
+                    title={t('library.editTitle')}
+                  >
+                    <RxPencil1 className="w-3 h-3" />
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  {selectedBook.author ? (
+                    <p className="truncate flex-1" style={{ fontSize: '11px', color: '#909090' }}>
+                      {selectedBook.author}
+                    </p>
+                  ) : <span className="flex-1" />}
+                  <button
+                    onClick={async () => {
+                      const newAuthor = prompt(t('library.editAuthor'), selectedBook.author || '')
+                      if (newAuthor !== null && newAuthor !== selectedBook.author) {
+                        try {
+                          await invoke('save_book_metadata', { book: { ...selectedBook, author: newAuthor } })
+                          useMangaStore.getState().scanAndLoad()
+                        } catch { /* ignore */ }
+                      }
+                    }}
+                    className="text-text-muted hover:text-accent transition-colors flex-shrink-0"
+                    title={t('library.editAuthor')}
+                  >
+                    <RxPencil1 className="w-3 h-3" />
+                  </button>
+                </div>
               </div>
 
               {/* Format Tag */}

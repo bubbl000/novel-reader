@@ -427,6 +427,21 @@ pub fn get_book_id_by_path(state: &AppState, path: &str) -> Result<Option<i64>, 
     })
 }
 
+pub fn count_books_in_folder(state: &AppState, folder_path: &str) -> Result<usize, String> {
+    let conn_guard = state.db_conn.lock();
+
+    let normalized_path = folder_path.replace('/', "\\");
+    let pattern = format!("{}%", normalized_path.trim_end_matches('\\').trim_end_matches('/'));
+
+    let count: i64 = conn_guard.query_row(
+        "SELECT COUNT(*) FROM book_metadata WHERE path LIKE ?1",
+        params![pattern],
+        |row| row.get(0),
+    ).map_err(|e| format!("统计书籍失败: {}", e))?;
+
+    Ok(count as usize)
+}
+
 pub fn get_all_books(state: &AppState) -> Result<Vec<BookMetadata>, String> {
     state.with_conn(|conn| {
         let mut stmt = conn.prepare(

@@ -251,6 +251,11 @@ fn delete_file_or_folder(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn count_books_in_folder(state: State<AppState>, folder_path: String) -> Result<usize, String> {
+    database::count_books_in_folder(&state, &folder_path)
+}
+
+#[tauri::command]
 fn create_subfolder(parent_path: String, folder_name: String) -> Result<String, String> {
     file_operations::create_subfolder(&parent_path, &folder_name)
 }
@@ -414,6 +419,7 @@ fn main() {
             move_file_to_folder,
             open_in_explorer,
             delete_file_or_folder,
+            count_books_in_folder,
             create_subfolder,
             get_all_subfolders,
             check_file_conflict,
