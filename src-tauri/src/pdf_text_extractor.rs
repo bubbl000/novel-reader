@@ -15,13 +15,6 @@ pub struct PdfExtractResult {
     pub title: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PdfOutlineItem {
-    pub title: String,
-    pub page_number: usize,
-    pub level: usize,
-}
-
 pub fn extract_text_from_pdf(file_path: &str) -> Result<PdfExtractResult, String> {
     let path = Path::new(file_path);
     if !path.exists() {
@@ -70,44 +63,4 @@ fn extract_page_text(doc: &Document, page_num: u32) -> String {
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-pub fn extract_pdf_outline(file_path: &str) -> Result<Vec<PdfOutlineItem>, String> {
-    let path = Path::new(file_path);
-    if !path.exists() {
-        return Err(format!("文件不存在: {}", file_path));
-    }
-
-    let doc = Document::load(path)
-        .map_err(|e| format!("无法加载PDF文件 {}: {}", file_path, e))?;
-
-    let mut outline_items = Vec::new();
-
-    if let Ok(toc) = doc.get_toc() {
-        collect_toc_items(&toc, &mut outline_items);
-    }
-
-    Ok(outline_items)
-}
-
-fn collect_toc_items(toc: &lopdf::Toc, items: &mut Vec<PdfOutlineItem>) {
-    for item in &toc.toc {
-        items.push(PdfOutlineItem {
-            title: item.title.clone(),
-            page_number: item.page.max(1),
-            level: item.level,
-        });
-    }
-}
-
-pub fn extract_pdf_page_count(file_path: &str) -> Result<usize, String> {
-    let path = Path::new(file_path);
-    if !path.exists() {
-        return Err(format!("文件不存在: {}", file_path));
-    }
-
-    let doc = Document::load(path)
-        .map_err(|e| format!("无法加载PDF文件 {}: {}", file_path, e))?;
-
-    Ok(doc.get_pages().len())
 }

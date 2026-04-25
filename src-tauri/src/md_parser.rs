@@ -112,15 +112,4 @@ fn extract_md_chapters(text: &str) -> Vec<MdChapter> {
     chapters
 }
 
-pub fn parse_md_to_html(text: &str) -> String {
-    let mut html_output = String::new();
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_TABLES);
-    options.insert(Options::ENABLE_STRIKETHROUGH);
-    options.insert(Options::ENABLE_TASKLISTS);
 
-    let parser = Parser::new_ext(text, options);
-    pulldown_cmark::html::push_html(&mut html_output, parser);
-
-    html_output
-}

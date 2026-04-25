@@ -88,12 +88,6 @@ pub fn create_subfolder(parent_path: &str, folder_name: &str) -> Result<String, 
     Ok(new_folder.to_string_lossy().to_string())
 }
 
-pub fn count_manga_in_folder(folder_path: &str, all_comics: &[crate::database::BookMetadata]) -> usize {
-    all_comics.iter()
-        .filter(|c| c.path.starts_with(folder_path))
-        .count()
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileOperationResult {
     pub success: bool,
@@ -287,75 +281,4 @@ pub fn move_file_to_folder(source_path: &str, target_folder: &str) -> FileOperat
     }
 }
 
-pub fn copy_folder_to_library(source_folder: &str, library_path: &str) -> FileOperationResult {
-    let source = Path::new(source_folder);
-    let target_dir = Path::new(library_path);
 
-    if !source.exists() || !source.is_dir() {
-        return FileOperationResult {
-            success: false,
-            message: format!("源文件夹不存在: {}", source_folder),
-            target_path: None,
-        };
-    }
-
-    if !target_dir.exists() || !target_dir.is_dir() {
-        return FileOperationResult {
-            success: false,
-            message: format!("目标库路径不存在: {}", library_path),
-            target_path: None,
-        };
-    }
-
-    let folder_name = match source.file_name() {
-        Some(name) => name,
-        None => {
-            return FileOperationResult {
-                success: false,
-                message: "无法获取文件夹名称".to_string(),
-                target_path: None,
-            }
-        }
-    };
-
-    let target_path = target_dir.join(folder_name);
-
-    if target_path.exists() {
-        return FileOperationResult {
-            success: false,
-            message: format!("目标文件夹已存在: {}", target_path.display()),
-            target_path: Some(target_path.to_string_lossy().to_string()),
-        };
-    }
-
-    match copy_dir_recursive(source, &target_path) {
-        Ok(_) => FileOperationResult {
-            success: true,
-            message: format!("文件夹复制到库成功: {}", folder_name.to_string_lossy()),
-            target_path: Some(target_path.to_string_lossy().to_string()),
-        },
-        Err(e) => FileOperationResult {
-            success: false,
-            message: format!("无法复制文件夹: {}", e),
-            target_path: None,
-        },
-    }
-}
-
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
-    fs::create_dir_all(dst).map_err(|e| format!("无法创建目录: {}", e))?;
-
-    for entry in fs::read_dir(src).map_err(|e| format!("无法读取目录: {}", e))? {
-        let entry = entry.map_err(|e| format!("无法读取目录项: {}", e))?;
-        let file_type = entry.file_type().map_err(|e| format!("无法获取文件类型: {}", e))?;
-        let target = dst.join(entry.file_name());
-
-        if file_type.is_dir() {
-            copy_dir_recursive(&entry.path(), &target)?;
-        } else {
-            fs::copy(entry.path(), &target).map_err(|e| format!("无法复制文件: {}", e))?;
-        }
-    }
-
-    Ok(())
-}

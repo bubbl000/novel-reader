@@ -21,13 +21,6 @@ pub fn emit_scan_progress(app: &AppHandle, status: &str, message: &str, progress
 }
 
 #[derive(Serialize)]
-struct EmptyPayload {}
-
-pub fn emit_library_updated(app: &AppHandle) {
-    emit_event(app, "library_updated", &EmptyPayload {});
-}
-
-#[derive(Serialize)]
 struct PathPayload<'a> {
     path: &'a str,
 }
@@ -96,11 +89,4 @@ pub fn emit_tag_removed(app: &AppHandle, comic_id: i64, tag_id: i64) {
     );
 }
 
-#[derive(Serialize)]
-struct ErrorPayload<'a> {
-    message: &'a str,
-}
 
-pub fn emit_error(app: &AppHandle, message: &str) {
-    emit_event(app, "error", &ErrorPayload { message });
-}

@@ -1,6 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod sort_utils;
 mod database;
 mod events;
 mod file_operations;
@@ -10,15 +9,12 @@ mod settings;
 mod pdf_text_extractor;
 mod txt_parser;
 mod md_parser;
-mod search_engine;
-mod reading_stats;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 use database::AppState;
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
-use std::sync::LazyLock;
 
 const MAX_RECURSION_DEPTH: usize = 20;
 
@@ -63,11 +59,6 @@ fn remove_library_path(app: AppHandle, path: String) -> Result<Vec<String>, Stri
 }
 
 #[tauri::command]
-fn init_db() -> Result<(), String> {
-    database::init_database_schema()
-}
-
-#[tauri::command]
 fn save_book_metadata(state: State<AppState>, book: database::BookMetadata) -> Result<i64, String> {
     database::upsert_book_metadata(&state, &book)
 }
@@ -93,11 +84,6 @@ fn get_book_id_by_path(state: State<AppState>, path: String) -> Result<Option<i6
 }
 
 #[tauri::command]
-fn update_book_last_opened(state: State<AppState>, book_id: i64) -> Result<(), String> {
-    database::update_book_last_opened(&state, book_id)
-}
-
-#[tauri::command]
 fn save_reading_progress(
     app: AppHandle,
     state: State<AppState>,
@@ -117,16 +103,6 @@ fn save_reading_progress(
 #[tauri::command]
 fn get_reading_progress(state: State<AppState>, book_id: i64) -> Result<Option<database::ReadingProgress>, String> {
     database::get_reading_progress(&state, book_id)
-}
-
-#[tauri::command]
-fn save_chapters(state: State<AppState>, book_id: i64, chapters: Vec<database::Chapter>) -> Result<(), String> {
-    database::save_chapters(&state, book_id, &chapters)
-}
-
-#[tauri::command]
-fn get_chapters(state: State<AppState>, book_id: i64) -> Result<Vec<database::Chapter>, String> {
-    database::get_chapters(&state, book_id)
 }
 
 #[tauri::command]
@@ -275,11 +251,6 @@ fn delete_file_or_folder(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn count_books_in_folder(state: State<AppState>, folder_path: String) -> Result<usize, String> {
-    database::count_books_in_folder(&state, &folder_path)
-}
-
-#[tauri::command]
 fn create_subfolder(parent_path: String, folder_name: String) -> Result<String, String> {
     file_operations::create_subfolder(&parent_path, &folder_name)
 }
@@ -379,13 +350,6 @@ async fn extract_pdf_text(file_path: String) -> Result<pdf_text_extractor::PdfEx
 }
 
 #[tauri::command]
-async fn extract_pdf_outline(file_path: String) -> Result<Vec<pdf_text_extractor::PdfOutlineItem>, String> {
-    tokio::task::spawn_blocking(move || {
-        pdf_text_extractor::extract_pdf_outline(&file_path)
-    }).await.unwrap()
-}
-
-#[tauri::command]
 async fn parse_txt_file(file_path: String) -> Result<txt_parser::TxtParseResult, String> {
     tokio::task::spawn_blocking(move || {
         txt_parser::parse_txt_file(&file_path)
@@ -397,92 +361,6 @@ async fn parse_md_file(file_path: String) -> Result<md_parser::MdParseResult, St
     tokio::task::spawn_blocking(move || {
         md_parser::parse_md_file(&file_path)
     }).await.unwrap()
-}
-
-#[tauri::command]
-fn read_file_text(file_path: String) -> Result<String, String> {
-    let path = Path::new(&file_path);
-    if !path.exists() {
-        return Err(format!("文件不存在: {}", file_path));
-    }
-
-    let ext = path.extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-
-    match ext.as_str() {
-        "txt" => {
-            let result = txt_parser::parse_txt_file(&file_path)?;
-            Ok(result.text)
-        }
-        "md" | "markdown" => {
-            let result = md_parser::parse_md_file(&file_path)?;
-            Ok(result.html_content)
-        }
-        _ => Err(format!("不支持的文件格式: {}", ext)),
-    }
-}
-
-#[tauri::command]
-async fn search_in_pdf(file_path: String, query: String, max_results: Option<usize>) -> Result<search_engine::SearchResults, String> {
-    tokio::task::spawn_blocking(move || {
-        let pdf_result = pdf_text_extractor::extract_text_from_pdf(&file_path)?;
-        let pages: Vec<(usize, String)> = pdf_result.pages.iter()
-            .map(|p| (p.page_number, p.text.clone()))
-            .collect();
-        Ok(search_engine::search_in_pdf_text(&pages, &query, max_results.unwrap_or(50)))
-    }).await.unwrap()
-}
-
-#[tauri::command]
-async fn search_in_txt(file_path: String, query: String, max_results: Option<usize>) -> Result<search_engine::SearchResults, String> {
-    tokio::task::spawn_blocking(move || {
-        let txt_result = txt_parser::parse_txt_file(&file_path)?;
-        Ok(search_engine::search_in_text(&txt_result.text, &query, max_results.unwrap_or(50)))
-    }).await.unwrap()
-}
-
-#[tauri::command]
-async fn search_in_md(file_path: String, query: String, max_results: Option<usize>) -> Result<search_engine::SearchResults, String> {
-    tokio::task::spawn_blocking(move || {
-        let md_result = md_parser::parse_md_file(&file_path)?;
-        let plain_text = html_to_plain_text(&md_result.html_content);
-        Ok(search_engine::search_in_text(&plain_text, &query, max_results.unwrap_or(50)))
-    }).await.unwrap()
-}
-
-fn html_to_plain_text(html: &str) -> String {
-    let re = regex::Regex::new(r"<[^>]+>").unwrap();
-    let text = re.replace_all(html, "").to_string();
-    text.replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-}
-
-#[tauri::command]
-fn start_reading_session(state: State<AppState>, book_id: i64) -> Result<i64, String> {
-    let conn = state.db_conn.lock();
-    reading_stats::start_reading_session(&conn, book_id)
-}
-
-#[tauri::command]
-fn end_reading_session(state: State<AppState>, session_id: i64, pages_read: i64) -> Result<(), String> {
-    let conn = state.db_conn.lock();
-    reading_stats::end_reading_session(&conn, session_id, pages_read)
-}
-
-#[tauri::command]
-fn get_reading_stats(state: State<AppState>, book_id: i64) -> Result<reading_stats::ReadingStats, String> {
-    let conn = state.db_conn.lock();
-    reading_stats::get_reading_stats(&conn, book_id)
-}
-
-#[tauri::command]
-fn get_recent_sessions(state: State<AppState>, book_id: i64, limit: Option<i64>) -> Result<Vec<reading_stats::ReadingSession>, String> {
-    let conn = state.db_conn.lock();
-    reading_stats::get_recent_sessions(&conn, book_id, limit.unwrap_or(10))
 }
 
 fn main() {
@@ -505,17 +383,13 @@ fn main() {
             save_settings,
             add_library_path,
             remove_library_path,
-            init_db,
             save_book_metadata,
             batch_save_book_metadata,
             get_all_books_metadata,
             get_book_by_path,
             get_book_id_by_path,
-            update_book_last_opened,
             save_reading_progress,
             get_reading_progress,
-            save_chapters,
-            get_chapters,
             add_bookmark,
             get_bookmarks,
             delete_bookmark,
@@ -540,24 +414,14 @@ fn main() {
             move_file_to_folder,
             open_in_explorer,
             delete_file_or_folder,
-            count_books_in_folder,
             create_subfolder,
             get_all_subfolders,
             check_file_conflict,
             copy_file_to_folder_with_suffix,
             move_folder,
             extract_pdf_text,
-            extract_pdf_outline,
             parse_txt_file,
             parse_md_file,
-            read_file_text,
-            search_in_pdf,
-            search_in_txt,
-            search_in_md,
-            start_reading_session,
-            end_reading_session,
-            get_reading_stats,
-            get_recent_sessions,
         ])
         .setup(|app| {
             let main_window = app.get_webview_window("main")

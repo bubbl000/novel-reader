@@ -109,7 +109,4 @@ pub fn remove_library_path(path: &str) -> Result<Vec<String>, String> {
     Ok(settings.library_paths)
 }
 
-pub fn get_library_paths() -> Result<Vec<String>, String> {
-    let settings = load_settings()?;
-    Ok(settings.library_paths)
-}
+

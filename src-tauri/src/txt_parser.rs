@@ -123,10 +123,4 @@ fn detect_chapters(text: &str) -> Vec<TxtChapter> {
     chapters
 }
 
-pub fn get_txt_chapter_text(text: &str, chapter: &TxtChapter) -> String {
-    if chapter.start_offset >= text.len() {
-        return String::new();
-    }
-    let end = chapter.end_offset.min(text.len());
-    text[chapter.start_offset..end].to_string()
-}
+

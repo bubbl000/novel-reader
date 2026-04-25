@@ -77,17 +77,6 @@ pub struct BookMetadata {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Chapter {
-    pub id: Option<i64>,
-    pub book_id: i64,
-    pub chapter_number: i64,
-    pub title: String,
-    pub start_offset: Option<i64>,
-    pub end_offset: Option<i64>,
-    pub level: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadingProgress {
     pub id: Option<i64>,
     pub book_id: i64,
@@ -122,24 +111,10 @@ pub struct Highlight {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FavoriteEntry {
-    pub id: Option<i64>,
-    pub book_id: i64,
-    pub created_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tag {
     pub id: Option<i64>,
     pub name: String,
     pub count: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BookTag {
-    pub id: Option<i64>,
-    pub book_id: i64,
-    pub tag_id: i64,
 }
 
 pub fn get_db_path() -> PathBuf {
@@ -452,21 +427,6 @@ pub fn get_book_id_by_path(state: &AppState, path: &str) -> Result<Option<i64>, 
     })
 }
 
-pub fn count_books_in_folder(state: &AppState, folder_path: &str) -> Result<usize, String> {
-    let conn_guard = state.db_conn.lock();
-
-    let normalized_path = folder_path.replace('/', "\\");
-    let pattern = format!("{}%", normalized_path.trim_end_matches('\\').trim_end_matches('/'));
-
-    let count: i64 = conn_guard.query_row(
-        "SELECT COUNT(*) FROM book_metadata WHERE path LIKE ?1",
-        params![pattern],
-        |row| row.get(0),
-    ).map_err(|e| format!("统计书籍失败: {}", e))?;
-
-    Ok(count as usize)
-}
-
 pub fn get_all_books(state: &AppState) -> Result<Vec<BookMetadata>, String> {
     state.with_conn(|conn| {
         let mut stmt = conn.prepare(
@@ -485,16 +445,6 @@ pub fn get_all_books(state: &AppState) -> Result<Vec<BookMetadata>, String> {
             .collect();
 
         Ok(books)
-    })
-}
-
-pub fn update_book_last_opened(state: &AppState, book_id: i64) -> Result<(), String> {
-    state.with_conn(|conn| {
-        conn.execute(
-            "UPDATE book_metadata SET last_opened = datetime('now'), updated_at = datetime('now') WHERE id = ?1",
-            params![book_id],
-        )?;
-        Ok(())
     })
 }
 
@@ -533,56 +483,6 @@ pub fn get_reading_progress(state: &AppState, book_id: i64) -> Result<Option<Rea
                 updated_at: row.get(6)?,
             })
         }).ok())
-    })
-}
-
-pub fn save_chapters(state: &AppState, book_id: i64, chapters: &[Chapter]) -> Result<(), String> {
-    state.with_conn(|conn| {
-        conn.execute("DELETE FROM chapters WHERE book_id = ?1", params![book_id])?;
-
-        let mut stmt = conn.prepare(
-            "INSERT INTO chapters (book_id, chapter_number, title, start_offset, end_offset, level)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
-        )?;
-
-        for chapter in chapters {
-            stmt.execute(params![
-                book_id,
-                chapter.chapter_number,
-                chapter.title,
-                chapter.start_offset,
-                chapter.end_offset,
-                chapter.level,
-            ])?;
-        }
-
-        Ok(())
-    })
-}
-
-pub fn get_chapters(state: &AppState, book_id: i64) -> Result<Vec<Chapter>, String> {
-    state.with_conn(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT id, book_id, chapter_number, title, start_offset, end_offset, level
-             FROM chapters WHERE book_id = ?1
-             ORDER BY chapter_number ASC"
-        )?;
-
-        let chapters: Vec<Chapter> = stmt.query_map(params![book_id], |row| {
-            Ok(Chapter {
-                id: Some(row.get(0)?),
-                book_id: row.get(1)?,
-                chapter_number: row.get(2)?,
-                title: row.get(3)?,
-                start_offset: row.get(4)?,
-                end_offset: row.get(5)?,
-                level: row.get(6)?,
-            })
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
-
-        Ok(chapters)
     })
 }
 

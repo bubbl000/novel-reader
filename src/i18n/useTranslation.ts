@@ -1,5 +1,5 @@
 import { useMangaStore } from '../stores/mangaStore'
-import { translations, Language } from './translations'
+import { translations } from './translations'
 
 function getNestedValue(obj: Record<string, unknown>, path: string): Record<string, string> | undefined {
   const keys = path.split('.')
@@ -12,19 +12,6 @@ function getNestedValue(obj: Record<string, unknown>, path: string): Record<stri
     return current as Record<string, string>
   }
   return undefined
-}
-
-export function t(key: string, lang?: Language, params?: Record<string, string | number>): string {
-  const language = lang || useMangaStore.getState().language || 'zh'
-  const value = getNestedValue(translations as unknown as Record<string, unknown>, key)
-  if (!value) return key
-  let text: string = value[language] || value['zh'] || key
-  if (params) {
-    Object.entries(params).forEach(([k, v]) => {
-      text = text.replace(`{${k}}`, String(v))
-    })
-  }
-  return text
 }
 
 export function useTranslation() {
